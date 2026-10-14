@@ -15,6 +15,10 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "bridge": "node ./bin/mcp-bridge.mjs",
+    "bridge:antigravity": "node ./bin/mcp-bridge.mjs --install antigravity",
+    "bridge:codex": "node ./bin/mcp-bridge.mjs --install codex",
+    "bridge:cursor": "node ./bin/mcp-bridge.mjs --install cursor",
+    "bridge:claude": "node ./bin/mcp-bridge.mjs --install claude",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

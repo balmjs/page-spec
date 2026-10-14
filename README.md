@@ -72,11 +72,52 @@ The output will be in `.output/chrome-mv3` and `.output/firefox-mv2`.
 
 ---
 
-## 🤖 Using with Cursor & Claude Code (MCP)
+## 🤖 AI Client MCP Integrations (Antigravity, Codex, Cursor, Claude)
 
-PageSpec includes a built-in companion bridge CLI (`bin/mcp-bridge.mjs`) that exposes the active browser tab as standard MCP tools and resources.
+PageSpec includes a companion bridge CLI (`bin/mcp-bridge.mjs`) that exposes the active browser tab as standard MCP tools (`extract_prd_markdown`, `extract_api_markdown`) and resources.
 
-### 1. Cursor Configuration
+You can automatically register PageSpec into your preferred AI client using the provided one-line commands:
+
+```bash
+# 1. Google DeepMind Antigravity (~/.gemini/config/mcp_config.json)
+pnpm bridge:antigravity
+
+# 2. OpenAI Codex (~/.codex/config.toml)
+pnpm bridge:codex
+
+# 3. Cursor (.cursor/mcp.json)
+pnpm bridge:cursor
+
+# 4. Claude Desktop / Claude Code
+pnpm bridge:claude
+```
+
+---
+
+### Manual Configuration Reference
+
+#### 1. Google Antigravity (AGY)
+Add to `~/.gemini/config/mcp_config.json` (or `.agents/mcp_config.json`):
+```json
+{
+  "mcpServers": {
+    "pagespec": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/page-spec/bin/mcp-bridge.mjs"]
+    }
+  }
+}
+```
+
+#### 2. OpenAI Codex
+Add to `~/.codex/config.toml` (or `.codex/config.toml`):
+```toml
+[mcp_servers.pagespec]
+command = "node"
+args = ["/ABSOLUTE/PATH/TO/page-spec/bin/mcp-bridge.mjs"]
+```
+
+#### 3. Cursor
 Add to `.cursor/mcp.json` or Global Cursor Settings:
 ```json
 {
@@ -89,7 +130,7 @@ Add to `.cursor/mcp.json` or Global Cursor Settings:
 }
 ```
 
-### 2. Claude Desktop / Claude Code Configuration
+#### 4. Claude Desktop / Claude Code
 Add to `claude_desktop_config.json`:
 ```json
 {
@@ -102,13 +143,15 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### 3. Usage in Chat
-Once configured, simply open any authenticated PRD or API documentation page in your browser. In Cursor or Claude Code, you can now say:
-> *"Read the active PRD from my browser and draft the implementation plan."*  
-> Or:  
-> *"Inspect the API documentation in my browser tab and generate TypeScript interfaces."*
+---
 
-The AI will invoke `extract_prd_markdown` or `extract_api_markdown` directly!
+### 💬 Usage in AI Chat
+Once configured, simply open any authenticated PRD or API documentation page in your browser. In Antigravity, Codex, Cursor, or Claude Code, you can now prompt:
+> *"读取浏览器当前打开的需求文档 (PRD)，梳理关键业务逻辑与技术方案。"*  
+> 或:  
+> *"分析当前浏览器标签页中的 API 规范，生成对应的 TypeScript 类型定义与客户端 SDK。"*
+
+AI 客户端将自动通过 MCP 调用 `extract_prd_markdown` 或 `extract_api_markdown` 并获取完整的上下文！
 
 ---
 

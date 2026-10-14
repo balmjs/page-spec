@@ -2,9 +2,14 @@
 
 /**
  * PageSpec MCP Companion Bridge CLI
- * Bridges Cursor, Claude Code, and Claude Desktop (Stdio MCP) with PageSpec Browser Extension (WebSocket).
+ * Bridges Antigravity, Codex, Cursor, Claude Code, and Claude Desktop (Stdio MCP)
+ * with the PageSpec Browser Extension (WebSocket).
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -15,11 +20,184 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SCRIPT_PATH = path.resolve(__dirname, 'mcp-bridge.mjs');
 const PORT = parseInt(process.env.PAGESPEC_PORT || '18492', 10);
 
+// CLI Argument Handlers for client configuration (--config, --install, --help)
+const args = process.argv.slice(2);
+
+function getClientConfig(client) {
+  switch (client.toLowerCase()) {
+    case 'antigravity':
+    case 'agy':
+    case 'gemini':
+      return {
+        name: 'Antigravity (Google DeepMind)',
+        targetFile: path.join(os.homedir(), '.gemini', 'config', 'mcp_config.json'),
+        format: 'json',
+        snippet: JSON.stringify(
+          {
+            mcpServers: {
+              pagespec: {
+                command: 'node',
+                args: [SCRIPT_PATH],
+              },
+            },
+          },
+          null,
+          2
+        ),
+      };
+    case 'codex':
+    case 'openai':
+      return {
+        name: 'OpenAI Codex',
+        targetFile: path.join(os.homedir(), '.codex', 'config.toml'),
+        format: 'toml',
+        snippet: `[mcp_servers.pagespec]\ncommand = "node"\nargs = ["${SCRIPT_PATH}"]\n`,
+      };
+    case 'cursor':
+      return {
+        name: 'Cursor',
+        targetFile: path.join(process.cwd(), '.cursor', 'mcp.json'),
+        format: 'json',
+        snippet: JSON.stringify(
+          {
+            mcpServers: {
+              pagespec: {
+                command: 'node',
+                args: [SCRIPT_PATH],
+              },
+            },
+          },
+          null,
+          2
+        ),
+      };
+    case 'claude':
+    case 'claude-desktop':
+      return {
+        name: 'Claude Desktop',
+        targetFile:
+          process.platform === 'darwin'
+            ? path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
+            : path.join(os.homedir(), 'AppData', 'Roaming', 'Claude', 'claude_desktop_config.json'),
+        format: 'json',
+        snippet: JSON.stringify(
+          {
+            mcpServers: {
+              pagespec: {
+                command: 'node',
+                args: [SCRIPT_PATH],
+              },
+            },
+          },
+          null,
+          2
+        ),
+      };
+    default:
+      return null;
+  }
+}
+
+function handleInstall(clientKey) {
+  const cfg = getClientConfig(clientKey);
+  if (!cfg) {
+    console.error(`未知客户端: ${clientKey}。可用选项: antigravity, codex, cursor, claude`);
+    process.exit(1);
+  }
+
+  const dir = path.dirname(cfg.targetFile);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  if (cfg.format === 'json') {
+    let existing = {};
+    if (fs.existsSync(cfg.targetFile)) {
+      try {
+        const content = fs.readFileSync(cfg.targetFile, 'utf8').trim();
+        if (content) existing = JSON.parse(content);
+      } catch {
+        existing = {};
+      }
+    }
+    if (!existing.mcpServers) existing.mcpServers = {};
+    existing.mcpServers.pagespec = {
+      command: 'node',
+      args: [SCRIPT_PATH],
+    };
+    fs.writeFileSync(cfg.targetFile, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+    console.log(`✓ 成功将 PageSpec MCP 注册到 ${cfg.name}:`);
+    console.log(`  配置文件: ${cfg.targetFile}`);
+  } else if (cfg.format === 'toml') {
+    let content = '';
+    if (fs.existsSync(cfg.targetFile)) {
+      content = fs.readFileSync(cfg.targetFile, 'utf8');
+    }
+    if (content.includes('[mcp_servers.pagespec]')) {
+      console.log(`! ${cfg.name} 配置文件中已存在 [mcp_servers.pagespec]，跳过写入。`);
+      console.log(`  配置文件: ${cfg.targetFile}`);
+    } else {
+      const separator = content.endsWith('\n') || content.length === 0 ? '' : '\n';
+      const toAppend = `${separator}\n# PageSpec Browser WebMCP Bridge\n${cfg.snippet}`;
+      fs.writeFileSync(cfg.targetFile, content + toAppend, 'utf8');
+      console.log(`✓ 成功将 PageSpec MCP 添加到 ${cfg.name}:`);
+      console.log(`  配置文件: ${cfg.targetFile}`);
+    }
+  }
+  process.exit(0);
+}
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`
+PageSpec MCP Bridge CLI
+
+使用方式:
+  node bin/mcp-bridge.mjs                   启动 MCP Stdio Server 与 WebSocket 监听服务
+  node bin/mcp-bridge.mjs --config <client> 输出目标客户端的配置代码块
+  node bin/mcp-bridge.mjs --install <client> 自动写入目标客户端的配置文件
+
+支持的客户端 (<client>):
+  antigravity  Google DeepMind Antigravity (~/.gemini/config/mcp_config.json)
+  codex        OpenAI Codex (~/.codex/config.toml)
+  cursor       Cursor (.cursor/mcp.json)
+  claude       Claude Desktop (claude_desktop_config.json)
+
+环境变量:
+  PAGESPEC_PORT  指定 WebSocket 监听端口 (默认: 18492)
+`);
+  process.exit(0);
+}
+
+if (args[0] === '--config') {
+  const target = args[1] || 'antigravity';
+  const cfg = getClientConfig(target);
+  if (!cfg) {
+    console.error(`未知客户端: ${target}。可用选项: antigravity, codex, cursor, claude`);
+    process.exit(1);
+  }
+  console.log(`# 目标客户端: ${cfg.name}`);
+  console.log(`# 配置文件路径: ${cfg.targetFile}\n`);
+  console.log(cfg.snippet);
+  process.exit(0);
+}
+
+if (args[0] === '--install') {
+  const target = args[1] || 'antigravity';
+  handleInstall(target);
+}
+
+// -------------------------------------------------------------
+// MCP Server & WebSocket Bridge Runtime
+// -------------------------------------------------------------
+
 // Log exclusively to stderr so stdout is strictly preserved for MCP JSON-RPC
-function log(...args) {
-  process.stderr.write(`[PageSpec-Bridge] ${args.join(' ')}\n`);
+function log(...msgArgs) {
+  process.stderr.write(`[PageSpec-Bridge] ${msgArgs.join(' ')}\n`);
 }
 
 // 1. WebSocket Server for Browser Extension

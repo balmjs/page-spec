@@ -175,17 +175,79 @@ function openSidePanel() {
   window.close();
 }
 
-// Copy Cursor MCP Config
+// MCP Client Selector
+type McpClientType = 'antigravity' | 'codex' | 'cursor' | 'claude';
+const selectedMcpClient = ref<McpClientType>('antigravity');
+
+const mcpClientDetails = computed(() => {
+  const bridgePath = '/Users/elf-mouse/www/balmjs/page-spec/bin/mcp-bridge.mjs';
+  switch (selectedMcpClient.value) {
+    case 'antigravity':
+      return {
+        name: 'Antigravity (Google DeepMind)',
+        configFile: '~/.gemini/config/mcp_config.json',
+        installCmd: 'pnpm bridge:antigravity',
+        snippet: JSON.stringify(
+          {
+            mcpServers: {
+              pagespec: {
+                command: 'node',
+                args: [bridgePath],
+              },
+            },
+          },
+          null,
+          2
+        ),
+      };
+    case 'codex':
+      return {
+        name: 'OpenAI Codex',
+        configFile: '~/.codex/config.toml',
+        installCmd: 'pnpm bridge:codex',
+        snippet: `[mcp_servers.pagespec]\ncommand = "node"\nargs = ["${bridgePath}"]\n`,
+      };
+    case 'cursor':
+      return {
+        name: 'Cursor',
+        configFile: '.cursor/mcp.json',
+        installCmd: 'pnpm bridge:cursor',
+        snippet: JSON.stringify(
+          {
+            mcpServers: {
+              pagespec: {
+                command: 'node',
+                args: [bridgePath],
+              },
+            },
+          },
+          null,
+          2
+        ),
+      };
+    case 'claude':
+      return {
+        name: 'Claude Desktop / Code',
+        configFile: 'claude_desktop_config.json',
+        installCmd: 'pnpm bridge:claude',
+        snippet: JSON.stringify(
+          {
+            mcpServers: {
+              pagespec: {
+                command: 'node',
+                args: [bridgePath],
+              },
+            },
+          },
+          null,
+          2
+        ),
+      };
+  }
+});
+
 function copyMcpConfig() {
-  const config = {
-    mcpServers: {
-      pagespec: {
-        command: 'node',
-        args: ['/path/to/page-spec/bin/mcp-bridge.mjs'],
-      },
-    },
-  };
-  navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+  navigator.clipboard.writeText(mcpClientDetails.value.snippet);
   copiedSnippet.value = true;
   setTimeout(() => (copiedSnippet.value = false), 2000);
 }
@@ -409,24 +471,68 @@ function copyMcpConfig() {
           </div>
         </div>
 
-        <!-- Quick Start for Cursor / Claude -->
-        <div class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-2.5">
+        <!-- Multi-Client MCP Configuration (Antigravity, Codex, Cursor, Claude) -->
+        <div class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
           <div class="flex items-center justify-between">
-            <h3 class="text-xs font-bold text-slate-900 dark:text-white">Cursor / Claude Code 快速配置</h3>
+            <h3 class="text-xs font-bold text-slate-900 dark:text-white">AI 客户端 MCP 接入</h3>
             <button
               @click="copyMcpConfig"
               class="flex items-center space-x-1 text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline"
             >
               <component :is="copiedSnippet ? Check : Copy" class="w-3 h-3" />
-              <span>{{ copiedSnippet ? '已复制' : '复制配置' }}</span>
+              <span>{{ copiedSnippet ? '已复制配置' : '复制配置' }}</span>
             </button>
           </div>
-          <p class="text-[11px] text-slate-500 dark:text-slate-400">
-            在本地终端启动配套 Bridge CLI：
-          </p>
-          <pre class="p-2 rounded bg-slate-900 text-slate-100 text-[11px] font-mono overflow-x-auto select-all">pnpm bridge</pre>
-          <p class="text-[11px] text-slate-500 dark:text-slate-400">
-            或在 <code class="font-mono">.cursor/mcp.json</code> 中直接注册该命令，即可在对话中由 AI 自动读取当前网页 PRD 与接口！
+
+          <!-- Client Switcher Tabs -->
+          <div class="grid grid-cols-4 gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-900 text-center text-[10px] font-medium">
+            <button
+              @click="selectedMcpClient = 'antigravity'"
+              class="py-1 px-1 rounded transition"
+              :class="selectedMcpClient === 'antigravity' ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'"
+            >
+              Antigravity
+            </button>
+            <button
+              @click="selectedMcpClient = 'codex'"
+              class="py-1 px-1 rounded transition"
+              :class="selectedMcpClient === 'codex' ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'"
+            >
+              Codex
+            </button>
+            <button
+              @click="selectedMcpClient = 'cursor'"
+              class="py-1 px-1 rounded transition"
+              :class="selectedMcpClient === 'cursor' ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'"
+            >
+              Cursor
+            </button>
+            <button
+              @click="selectedMcpClient = 'claude'"
+              class="py-1 px-1 rounded transition"
+              :class="selectedMcpClient === 'claude' ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm font-bold' : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'"
+            >
+              Claude
+            </button>
+          </div>
+
+          <!-- Config Details -->
+          <div class="space-y-1.5 text-[11px]">
+            <div class="flex items-center justify-between text-slate-500">
+              <span>配置文件路径:</span>
+              <span class="font-mono text-slate-700 dark:text-slate-300">{{ mcpClientDetails.configFile }}</span>
+            </div>
+            <div class="flex items-center justify-between text-slate-500">
+              <span>一键写入命令:</span>
+              <code class="font-mono px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 font-semibold">{{ mcpClientDetails.installCmd }}</code>
+            </div>
+          </div>
+
+          <!-- Snippet Preview -->
+          <pre class="p-2 rounded bg-slate-900 text-slate-100 text-[10px] font-mono overflow-x-auto select-all max-h-32">{{ mcpClientDetails.snippet }}</pre>
+
+          <p class="text-[10px] text-slate-400 leading-tight">
+            配置后，AI 即可在对话中通过 <code>extract_prd_markdown</code> 或 <code>extract_api_markdown</code> 自动读取当前网页内容。
           </p>
         </div>
       </section>
