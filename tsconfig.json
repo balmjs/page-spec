@@ -1,0 +1,24 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "skipLibCheck": true,
+    "types": ["node", "chrome"]
+  },
+  "include": [
+    "entrypoints/**/*",
+    "core/**/*",
+    "utils/**/*",
+    "components/**/*",
+    "bin/**/*",
+    ".wxt/wxt.d.ts"
+  ]
+}
