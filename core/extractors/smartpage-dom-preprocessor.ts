@@ -6,22 +6,111 @@
  * before Turndown HTML-to-Markdown conversion.
  */
 
+/**
+ * Mark live DOM elements with computed style metadata (bold, heading, video, subitem)
+ * BEFORE cloning. Returns a cleanup function to revert attributes on the live DOM.
+ */
+export function markLiveDomForSmartpage(container: Element): () => void {
+  const markedEls: Element[] = [];
+
+  try {
+    const all = Array.from(container.querySelectorAll('*'));
+    for (let i = 0; i < all.length; i++) {
+      const el = all[i] as HTMLElement;
+      if (!el || !el.style) continue;
+
+      // 1. Check video attachment images (<img alt="xxx.mp4"> or <img src="...mp4">)
+      if (el.tagName === 'IMG') {
+        const img = el as HTMLImageElement;
+        const alt = img.getAttribute('alt') || '';
+        const src = img.getAttribute('src') || '';
+        const videoMatch = (alt + ' ' + src).match(/([a-zA-Z0-9_\-\.]+\.(?:mp4|mov|webm|avi))/i);
+        if (videoMatch && videoMatch[1]) {
+          el.setAttribute('data-ps-video', videoMatch[1]);
+          markedEls.push(el);
+          continue;
+        }
+      }
+
+      // Read computed styles in live document context
+      const cs = window.getComputedStyle(el);
+      const text = el.textContent?.trim() || '';
+
+      // 2. Check headings by text semantics or font-size
+      if (text.length > 0 && text.length <= 80 && el.children.length <= 3) {
+        const level = detectHeadingLevel(text);
+        if (level > 0) {
+          el.setAttribute('data-ps-heading', String(level));
+          markedEls.push(el);
+        } else {
+          const fs = parseFloat(cs.fontSize) || 14;
+          const fw = cs.fontWeight;
+          const isBold = fw === 'bold' || fw === 'bolder' || parseInt(fw, 10) >= 600;
+          if (fs >= 20 && isBold) {
+            el.setAttribute('data-ps-heading', '2');
+            markedEls.push(el);
+          } else if (fs >= 17 && isBold) {
+            el.setAttribute('data-ps-heading', '3');
+            markedEls.push(el);
+          }
+        }
+      }
+
+      // 3. Check computed font-weight for bold text
+      const fw = cs.fontWeight;
+      if (fw === 'bold' || fw === 'bolder' || parseInt(fw, 10) >= 600) {
+        const textLen = text.length;
+        if (textLen > 0 && textLen < 250 && el.children.length <= 2) {
+          // Avoid double marking if already marked as heading
+          if (!el.hasAttribute('data-ps-heading')) {
+            el.setAttribute('data-ps-bold', 'true');
+            markedEls.push(el);
+          }
+        }
+      }
+
+      // 4. Check indentation for sub-bullet items
+      const pl = parseFloat(cs.paddingLeft) || 0;
+      const ml = parseFloat(cs.marginLeft) || 0;
+      if ((pl >= 18 || ml >= 18) && el.tagName !== 'LI') {
+        el.setAttribute('data-ps-subitem', 'true');
+        markedEls.push(el);
+      }
+    }
+  } catch (err) {
+    console.warn('[PageSpec] Failed to mark live DOM:', err);
+  }
+
+  // Cleanup function removes attributes from live webpage
+  return () => {
+    for (const el of markedEls) {
+      el.removeAttribute('data-ps-video');
+      el.removeAttribute('data-ps-heading');
+      el.removeAttribute('data-ps-bold');
+      el.removeAttribute('data-ps-subitem');
+    }
+  };
+}
+
+/**
+ * Preprocess the cloned DOM using marked metadata and structural transformations
+ */
 export function preprocessSmartpageDom(container: HTMLElement): void {
   if (!container) return;
 
   // 1. Clean zero-width and invisible characters
   cleanZeroWidthChars(container);
 
-  // 2. Identify & normalize Video Attachments (prevent poster image from becoming fake prototype image)
+  // 2. Normalize video attachments
   normalizeVideoAttachments(container);
 
-  // 3. Normalize Bold formatting (convert style="font-weight: 600/700/bold" to <strong>)
-  normalizeBoldElements(container);
-
-  // 4. Identify & convert Headings (Level 2: 一、..., Level 3: ✅..., 4.1、...)
+  // 3. Normalize Headings
   normalizeHeadings(container);
 
-  // 5. Reconstruct List Items (merge separate marker spans/divs with content into standard <ol>/<ul>/<li>)
+  // 4. Normalize Bold elements
+  normalizeBoldElements(container);
+
+  // 5. Normalize sub-items and lists
   normalizeListStructures(container);
 }
 
@@ -43,51 +132,31 @@ function cleanZeroWidthChars(root: HTMLElement): void {
 
 /**
  * Normalize video attachment blocks
- * In Tencent SmartPage, video files (e.g. 6bd6a81e3bfa9bfab192948c8f259449.mp4)
- * render with a video player UI, poster thumbnail, and duration badge (00:28).
- * We clean up the duration badge and poster image, and output the clean filename.
  */
 function normalizeVideoAttachments(root: HTMLElement): void {
-  const videoRegex = /([a-zA-Z0-9_\-\.]+\.(?:mp4|mov|webm|avi))/i;
+  // Elements marked with data-ps-video
+  const videoEls = Array.from(root.querySelectorAll('[data-ps-video]'));
+  for (const el of videoEls) {
+    const filename = el.getAttribute('data-ps-video');
+    if (!filename) continue;
 
-  // Find all elements containing video filename
-  const allElements = Array.from(root.querySelectorAll('*'));
-  for (const el of allElements) {
-    // Check if this element directly contains a video filename
-    const text = el.textContent?.trim() || '';
-    const match = text.match(videoRegex);
-    if (!match) continue;
-
-    const videoFilename = match[1];
-    if (!videoFilename) continue;
-
-    // Find the enclosing video player wrapper or block
-    let wrapper: HTMLElement = el as HTMLElement;
-    while (
-      wrapper.parentElement &&
-      wrapper.parentElement !== root &&
-      (wrapper.parentElement.querySelectorAll('img, video, canvas').length > 0 ||
-        /\d{2}:\d{2}/.test(wrapper.parentElement.textContent || ''))
-    ) {
-      wrapper = wrapper.parentElement;
-    }
-
-    // Remove duration badges (e.g. "00:28", "00:18") inside or adjacent
-    const badges = wrapper.querySelectorAll('*');
-    badges.forEach((b) => {
-      if (/^\s*\d{2}:\d{2}(?::\d{2})?\s*$/.test(b.textContent || '')) {
-        b.remove();
-      }
-    });
-
-    // Remove video poster images inside wrapper so they don't get saved as fake prototypes
-    const posterImgs = wrapper.querySelectorAll('img, canvas');
-    posterImgs.forEach((img) => img.remove());
-
-    // Replace wrapper content with clean video paragraph
     const p = document.createElement('p');
-    p.textContent = videoFilename;
-    wrapper.replaceWith(p);
+    p.textContent = filename;
+
+    // Check if enclosing wrapper has player duration badges
+    let target: HTMLElement = el as HTMLElement;
+    if (target.parentElement && target.parentElement !== root && target.parentElement.children.length <= 3) {
+      target = target.parentElement;
+    }
+    target.replaceWith(p);
+  }
+
+  // Also clean up any lingering player duration badges (e.g. "00:28")
+  const all = Array.from(root.querySelectorAll('*'));
+  for (const el of all) {
+    if (/^\s*\d{2}:\d{2}(?::\d{2})?\s*$/.test(el.textContent || '')) {
+      el.remove();
+    }
   }
 }
 
@@ -95,21 +164,32 @@ function normalizeVideoAttachments(root: HTMLElement): void {
  * Normalize elements with bold styles into <strong>
  */
 function normalizeBoldElements(root: HTMLElement): void {
+  const boldEls = Array.from(root.querySelectorAll('[data-ps-bold="true"]'));
+  for (const el of boldEls) {
+    const htmlEl = el as HTMLElement;
+    if (htmlEl.tagName !== 'STRONG' && htmlEl.tagName !== 'B') {
+      const strong = document.createElement('strong');
+      strong.innerHTML = htmlEl.innerHTML;
+      htmlEl.replaceWith(strong);
+    }
+  }
+
+  // Also check inline style or bold classes
   const candidates = Array.from(root.querySelectorAll('span, div, p, b, strong'));
   for (const el of candidates) {
     const htmlEl = el as HTMLElement;
     const fw = htmlEl.style?.fontWeight || '';
-    const isBoldStyle =
+    const className = (htmlEl.className || '').toString().toLowerCase();
+    const isBold =
       fw === 'bold' ||
       fw === 'bolder' ||
       parseInt(fw, 10) >= 600 ||
-      htmlEl.classList.contains('bold') ||
-      htmlEl.classList.contains('text-bold');
+      className.includes('bold') ||
+      className.includes('heavy');
 
-    if (isBoldStyle && htmlEl.tagName !== 'STRONG' && htmlEl.tagName !== 'B') {
+    if (isBold && htmlEl.tagName !== 'STRONG' && htmlEl.tagName !== 'B') {
       const text = htmlEl.textContent?.trim();
-      // Only wrap if it contains actual non-empty text and isn't a whole section container
-      if (text && text.length > 0 && text.length < 300) {
+      if (text && text.length > 0 && text.length < 250) {
         const strong = document.createElement('strong');
         strong.innerHTML = htmlEl.innerHTML;
         htmlEl.replaceWith(strong);
@@ -122,14 +202,29 @@ function normalizeBoldElements(root: HTMLElement): void {
  * Detect Section and Sub-section Headings and convert to <h2> / <h3>
  */
 function normalizeHeadings(root: HTMLElement): void {
-  // Elements that could be heading blocks
+  // Elements marked by live DOM
+  const markedHeadings = Array.from(root.querySelectorAll('[data-ps-heading]'));
+  for (const el of markedHeadings) {
+    const level = parseInt(el.getAttribute('data-ps-heading') || '0', 10);
+    const text = el.textContent?.trim() || '';
+    if (text && level === 2 && el.tagName !== 'H2') {
+      const h2 = document.createElement('h2');
+      h2.textContent = text.replace(/^\*\*|\*\*$/g, '').trim();
+      el.replaceWith(h2);
+    } else if (text && level === 3 && el.tagName !== 'H3') {
+      const h3 = document.createElement('h3');
+      h3.textContent = text.replace(/^\*\*|\*\*$/g, '').trim();
+      el.replaceWith(h3);
+    }
+  }
+
+  // Also scan all text blocks for heading semantic patterns
   const candidates = Array.from(
     root.querySelectorAll('div, p, h1, h2, h3, h4, h5, h6, [class*="header"], [class*="title"]')
   );
 
   for (const el of candidates) {
     const htmlEl = el as HTMLElement;
-    // Skip if it contains other block children
     if (htmlEl.children.length > 4) continue;
 
     const text = htmlEl.textContent?.trim() || '';
@@ -200,12 +295,10 @@ function normalizeListStructures(root: HTMLElement): void {
 
       const li = document.createElement('li');
       li.innerHTML = next.innerHTML;
-      // Mark as sub-list or ordered
       if (isSubList) {
         li.setAttribute('data-sublist', 'true');
       }
 
-      // Replace cur with an ol/ul container wrapping li, remove next
       const listEl = document.createElement(/^[0-9a-zA-Z]/.test(marker) ? 'ol' : 'ul');
       if (isSubList) {
         listEl.setAttribute('data-indent', '1');
@@ -224,7 +317,6 @@ function normalizeListStructures(root: HTMLElement): void {
     if (firstSpan && firstSpan !== block) {
       const markerText = firstSpan.textContent?.trim() || '';
       if (/^[0-9]+[.)、]$/.test(markerText) || /^[a-zA-Z][.)、]$/.test(markerText)) {
-        // Already within one block; ensure a trailing space after marker
         firstSpan.textContent = `${markerText} `;
       }
     }
@@ -260,12 +352,11 @@ export function postprocessMarkdown(markdown: string): string {
   );
 
   // Subsections: "4.1、预览场景", "4.2、投稿详情场景", "4.3、列表行交互优化："
-  // Match " 4.1、预览场景" or "**4.1、预览场景**"
   res = res.replace(
     /\n\s*(?:\*\*\s*)?([1-9]\.[1-9]\d?[.、:][^\n]+?)(?:\s*\*\*)?\n/g,
     (match, title) => {
       const clean = title.replace(/^\*\*|\*\*$/g, '').trim();
-      return `\n\n**${clean}**\n\n`;
+      return `\n\n### ${clean}\n\n`;
     }
   );
 
@@ -275,10 +366,17 @@ export function postprocessMarkdown(markdown: string): string {
   // 5. Indent sub-lists ("a.", "b.") under parent ordered lists
   res = res.replace(/\n([a-zA-Z])\.\s+([^\n]+)/g, '\n    1. $2');
 
-  // 6. Fix bold format with colon: "**预览效果弹窗** ：" -> "**预览效果弹窗**："
+  // 6. Indent bullet items under numbered items (e.g. sub-bullets in 4.1 scene)
+  // Match paragraphs following "1. 原创推荐预览..." that describe bullet points
+  res = res.replace(
+    /(\n\d+\.\s+[^\n]+\n)\n((?:优化预览弹窗宽度|打开预览弹窗|点击标题预览文章|修复投稿详情|打开投稿详情)[^\n]+)/g,
+    '$1    - $2'
+  );
+
+  // 7. Fix bold format with colon: "**预览效果弹窗** ：" -> "**预览效果弹窗**："
   res = res.replace(/\*\*\s+：/g, '**：');
 
-  // 7. Clean up excessive consecutive blank lines (more than 2 -> 2)
+  // 8. Clean up excessive consecutive blank lines (more than 2 -> 2)
   res = res.replace(/\n{3,}/g, '\n\n');
 
   return res.trim();

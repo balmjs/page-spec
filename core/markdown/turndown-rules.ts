@@ -49,6 +49,15 @@ export function createTurndownService(options?: TurndownService.Options): Turndo
     filter: (node) => {
       const el = node as HTMLElement;
       if (!el) return false;
+      // Do not convert if element or children contain heading tags or emoji headings
+      if (
+        el.querySelector('h1, h2, h3, [data-ps-heading]') ||
+        el.hasAttribute('data-ps-heading') ||
+        /^[✅❌🎯📌⚠️💡]/.test(el.textContent?.trim() || '')
+      ) {
+        return false;
+      }
+
       const className = (el.className || '').toString().toLowerCase();
       return (
         className.includes('callout') ||

@@ -126,7 +126,20 @@ export function svgToBlob(svg: SVGSVGElement): Blob {
 /**
  * Remove noise elements (scripts, ads, navigation, sidebars, comments) from a container.
  */
-export function cleanNoiseElements(root: Element): void {
+export function cleanNoiseElements(root: Element, isDocPlatform = false): void {
+  if (isDocPlatform) {
+    // For rich doc editors, only remove non-visual technical tags; preserve all layout & block elements
+    const technicalSelectors = ['script', 'noscript', 'style', 'link'];
+    for (const sel of technicalSelectors) {
+      try {
+        root.querySelectorAll(sel).forEach((el) => el.remove());
+      } catch {
+        // ignore
+      }
+    }
+    return;
+  }
+
   const noiseSelectors = [
     'script',
     'noscript',

@@ -1,6 +1,10 @@
 import { Readability } from '@mozilla/readability';
 import { createTurndownService, generateYamlFrontmatter } from '../markdown/turndown-rules';
-import { preprocessSmartpageDom, postprocessMarkdown } from './smartpage-dom-preprocessor';
+import {
+  markLiveDomForSmartpage,
+  preprocessSmartpageDom,
+  postprocessMarkdown,
+} from './smartpage-dom-preprocessor';
 import {
   sanitizeFilename,
   resolveImageSource,
@@ -220,9 +224,23 @@ export async function extractPrdBundle(
     throw new Error('未能从当前页面定位到有效的内容区域');
   }
 
-  // Clone container to avoid mutating live DOM
+  // 1. Detect prominent in-document title in container (often more descriptive than HTML <title>)
+  const docTitleEl = container.querySelector(
+    'h1, [class*="title-content"], [class*="pad-title"], [class*="blankpage-title"], [class*="header-title"]'
+  );
+  if (docTitleEl && docTitleEl.textContent?.trim()) {
+    const candidateTitle = docTitleEl.textContent.trim();
+    if (candidateTitle.length >= 3 && candidateTitle.length <= 150) {
+      rawTitle = candidateTitle;
+    }
+  }
+
+  // 2. Mark live DOM with computed styles (bold, headings, video attachments) before cloning
+  const unmarkLive = markLiveDomForSmartpage(container);
   const cloned = container.cloneNode(true) as HTMLElement;
-  cleanNoiseElements(cloned);
+  unmarkLive();
+
+  cleanNoiseElements(cloned, isTencentDoc());
   preprocessSmartpageDom(cloned);
 
   onProgress?.(10, 100, '正在识别原型图与多媒体资源...');
@@ -246,6 +264,17 @@ export async function extractPrdBundle(
       img.remove();
       continue;
     }
+    const alt = img.getAttribute('alt') || '';
+    const src = img.getAttribute('src') || '';
+    // Skip video attachments so they are not downloaded as fake prototypes
+    if (
+      img.hasAttribute('data-ps-video') ||
+      /\.(?:mp4|mov|webm|avi)(?:\?.*)?$/i.test(alt) ||
+      /\.(?:mp4|mov|webm|avi)(?:\?.*)?$/i.test(src)
+    ) {
+      continue;
+    }
+
     const realSrc = resolveImageSource(img);
     if (realSrc) {
       targets.push({ element: img, type: 'img', srcUrl: realSrc });
