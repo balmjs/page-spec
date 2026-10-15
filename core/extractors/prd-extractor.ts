@@ -51,6 +51,9 @@ const PLATFORM_SELECTORS = [
   'main.notion-frame',
   // Axure RP HTML exports
   '#base',
+  '.ax_default',
+  '#u0',
+  '#mainFrame',
   // Generic standard containers
   'article',
   '[role="main"]',
@@ -140,13 +143,37 @@ function getExtensionFromMimeOrUrl(mime: string | null, url: string): string {
   return 'png';
 }
 
+import { isTencentDoc, extractTencentDocBundle } from './tencent-doc-extractor';
+
 /**
  * Extract authenticated PRD content, rewrite assets locally, and bundle into Markdown.
  */
 export async function extractPrdBundle(
   onProgress?: (current: number, total: number, message: string) => void
 ): Promise<PrdExtractionResult> {
-  const rawTitle = document.title?.trim() || 'Requirement_Document';
+  // 0. Dedicated native extractor for Tencent Docs (doc.weixin.qq.com / docs.qq.com)
+  if (isTencentDoc()) {
+    return await extractTencentDocBundle(onProgress);
+  }
+
+  let rawTitle = document.title?.trim() || '';
+  if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1') {
+    const heading = document.querySelector('h1, h2')?.textContent?.trim();
+    if (heading && heading.length < 60) {
+      rawTitle = heading;
+    } else {
+      try {
+        if (window.top && window.top.document.title?.trim()) {
+          rawTitle = window.top.document.title.trim();
+        }
+      } catch {
+        // ignore cross-origin top access restriction
+      }
+    }
+  }
+  if (!rawTitle) {
+    rawTitle = 'Requirement_Document';
+  }
   const cleanTitle = sanitizeFilename(rawTitle, 'PRD');
   const sourceUrl = window.location.href;
   const warnings: string[] = [];

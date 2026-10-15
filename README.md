@@ -1,195 +1,74 @@
 # PageSpec 📑
 
-> **Open-Source Cross-Browser Extension (Chrome MV3 & Firefox MV2/MV3) & WebMCP Bridge**  
-> Extract authenticated, dynamically rendered web content from active browser tabs into clean, LLM-ready Markdown bundles and API specifications, and query them seamlessly from **Cursor, Claude Code, and local AI agents**.
+> **高效前端需求采集浏览器插件 (Chrome MV3 & Firefox MV2/MV3)**  
+> 专为前端开发者打造：一键穿透各类复杂/嵌套 iframe 需求页面（Axure、飞书、语雀、Confluence 等），自动提取正文转为结构化 Markdown，并发下载并重写高分辨率原型图，直接落地到本地工程的 `requirements/` 目录，无需任何 AI 交互或 Token 消耗，即刻赋能本地 Cursor / Claude Code 等 AI Agent Coding。
 
 ---
 
-## ✨ Core Features
+## ✨ 核心亮点
 
-### 1. 📦 Requirement Document Extractor ("Download PRD Bundle")
-- **Authenticated DOM Traversal**: Runs directly in the active tab context, preserving user session cookies, auth tokens, and live single-page app (SPA) DOM state.
-- **Smart Content Isolation**: Auto-detects main document containers across platforms (**Feishu/Lark, Confluence, Yuque, Notion, Axure**, or fallback to Readability / `<article>`), stripping away sidebars, headers, floating bars, and comments.
-- **Visual Asset Deduplication & Local Rewriting**:
-  - Captures `<img>`, `<canvas>` (via `toBlob()`), and inline `<svg>`.
-  - Resolves lazy-loaded sources (`data-src`, `data-original`, `srcset`).
-  - Intelligently filters out tiny UI icons, badges, and avatars (`< 32px`).
-  - Concurrently fetches high-res images (`credentials: 'include'`) and saves them as `assets/prototype-001.png`, etc.
-  - Rewrites DOM image tags to local relative paths (`./assets/prototype-001.png`).
-- **Memory-Fast ZIP Packaging**: Uses `fflate` to bundle `index.md` (with YAML frontmatter) and the `assets/` directory into `<page-title>-prd.zip` in memory and triggers direct browser download.
+### 1. 🛡️ 嵌套 / 跨域 iframe 智能穿透与靶向提取
+- **多层 iframe 自动穿透**：通过 Chrome MV3 `all_frames: true` 深入所有子框架，打破跨域隔离限制。
+- **正文密度打分机制 (Content Density Scoring)**：智能区分左侧菜单/目录 iframe 与正文内容 iframe，自动锁定核心需求文档区，剔除侧栏、顶部杂音与高密度超链接菜单。
+- **带鉴权的原型图抓取**：在正文 frame 真实会话下运行，自动携带登录态 Cookie 并发下载图片与 Canvas，转换为本地相对路径引用（`./assets/prototype-001.png`）。
 
-### 2. ⚡ API Documentation Extractor ("Download API Spec")
-- **Dual-Engine Extraction**:
-  - **Engine A (OpenAPI Sniffing)**: Inspects the page context (`window.ui.spec()`, Redoc store, etc.) to extract raw OpenAPI 3.0 / Swagger JSON, converting it directly into pristine Markdown.
-  - **Engine B (Deep DOM Parsing)**: Automatically expands collapsed Swagger / Knife4j / Apifox / Redoc accordions, flattens multi-div pseudo tables into valid Markdown tables, and preserves JSON request/response payloads in fenced code blocks.
-- **Single File Output**: Generates a clean `<page-title>-api.md` with YAML frontmatter.
+### 2. ⚡ 本地工程 `requirements/` 目录一键直写
+- **File System Access API 支持**：支持在插件中一键绑定当前本地前端项目的 `requirements` 文件夹（权限自动持久化存储）。
+- **零解压、零拖拽**：提取时直接将 `<title>.md` 和 `assets/` 原型图落盘至本地项目磁盘，打开 VSCode / Cursor 即可直接 `@requirements/PRD-xxx.md` 开展开发。
+- **ZIP 压缩包无缝降级**：非 Chromium 浏览器或未授权目录时，一键自动打包为 `.zip` 触发浏览器标准下载。
 
-### 3. 🔌 WebMCP & Local MCP Bridge
-- **In-Page WebMCP (`navigator.modelContext` / `window.mcp`)**: Exposes `extract_prd_markdown` and `extract_api_markdown` directly to web page AI scripts.
-- **Local MCP Companion CLI**: Includes a standalone bridge (`./bin/mcp-bridge.mjs`) that connects to Cursor, Claude Code, and Claude Desktop over standard **MCP Stdio**, bridging in real-time to the browser extension via WebSocket (`ws://localhost:18492`).
+### 3. 🔌 结构化 API 文档提取
+- **OpenAPI / Swagger 规格直出**：底层嗅探页面原生 OpenAPI 规格 JSON 并格式化为 Markdown。
+- **DOM 表格深度打平**：兼容 Knife4j、Apifox、Redoc，自动展开折叠面板，打平多层参数表格。
 
 ---
 
-## 🛠 Tech Stack
+## 🛠 技术栈
 
-- **Extension Framework**: [WXT](https://wxt.dev/) (Unified Chrome MV3 & Firefox MV2/MV3 with Vite & HMR)
-- **Frontend UI**: Vue 3 (Composition API, `<script setup>`) + TypeScript + Tailwind CSS
-- **DOM & Markdown**: `@mozilla/readability` + `turndown` + `@truto/turndown-plugin-gfm`
-- **Compression**: `fflate`
-- **MCP Protocol**: `@modelcontextprotocol/sdk` + `ws`
+- **插件架构**：[WXT](https://wxt.dev/) (Chrome MV3 & Firefox MV2/MV3)
+- **UI 界面**：Vue 3 (Composition API) + TypeScript + Tailwind CSS
+- **DOM & Markdown 解析**：`@mozilla/readability` + `turndown` + `@truto/turndown-plugin-gfm`
+- **文件落盘与压缩**：HTML5 File System Access API + `fflate`
 
 ---
 
-## 🚀 Quick Start
+## 🚀 快速上手
 
-### 1. Install Dependencies
+### 1. 安装依赖与本地开发
 ```bash
 pnpm install
-```
 
-### 2. Run Extension in Development
-```bash
-# Chrome
+# 启动 Chrome 调试
 pnpm dev
 
-# Firefox
+# 启动 Firefox 调试
 pnpm dev:firefox
 ```
-WXT will automatically launch a fresh browser instance with PageSpec loaded and hot-module reloading (HMR) enabled.
 
-### 3. Build for Production
+### 2. 构建生产包
 ```bash
-# Build Chrome MV3
+# 构建 Chrome MV3
 pnpm build
 
-# Build Firefox
-pnpm build:firefox
-
-# Create distributable zip packages
+# 打包发布 ZIP
 pnpm zip
 ```
-The output will be in `.output/chrome-mv3` and `.output/firefox-mv2`.
+构建产物输出于 `.output/chrome-mv3`，直接在 Chrome 扩展管理界面 (`chrome://extensions/`) 点击 **“加载已解压的扩展程序”** 即可使用。
 
 ---
 
-## 🤖 AI Client MCP Integrations (Antigravity, Codex, Cursor, Claude)
+## 💡 AI Agent Coding 推荐工作流
 
-PageSpec includes a companion bridge CLI (`bin/mcp-bridge.mjs`) that exposes the active browser tab as standard MCP tools (`extract_prd_markdown`, `extract_api_markdown`) and resources.
-
-You can automatically register PageSpec into your preferred AI client using the provided one-line commands:
-
-```bash
-# 1. Google DeepMind Antigravity (~/.gemini/config/mcp_config.json)
-pnpm bridge:antigravity
-
-# 2. OpenAI Codex (~/.codex/config.toml)
-pnpm bridge:codex
-
-# 3. Cursor (.cursor/mcp.json)
-pnpm bridge:cursor
-
-# 4. Claude Desktop / Claude Code
-pnpm bridge:claude
-```
+1. 在浏览器打开产品经理给出的需求文档或原型链接（如 Axure、飞书、语雀等）；
+2. 点击 PageSpec 插件，选择本地项目的 `requirements` 文件夹（首次绑定后无需重复设置）；
+3. 点击 **“一键写入本地 requirements 目录”**；
+4. 回到 Cursor 或 Claude Code 终端，直接提问：
+   ```text
+   @requirements/PRD-用户模块.md 请根据该需求文档与对应 assets/ 原型图，实现前端业务页面及相关组件
+   ```
 
 ---
 
-### Manual Configuration Reference
+## 📄 授权协议
 
-#### 1. Google Antigravity (AGY)
-Add to `~/.gemini/config/mcp_config.json` (or `.agents/mcp_config.json`):
-```json
-{
-  "mcpServers": {
-    "pagespec": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/page-spec/bin/mcp-bridge.mjs"]
-    }
-  }
-}
-```
-
-#### 2. OpenAI Codex
-Add to `~/.codex/config.toml` (or `.codex/config.toml`):
-```toml
-[mcp_servers.pagespec]
-command = "node"
-args = ["/ABSOLUTE/PATH/TO/page-spec/bin/mcp-bridge.mjs"]
-```
-
-#### 3. Cursor
-Add to `.cursor/mcp.json` or Global Cursor Settings:
-```json
-{
-  "mcpServers": {
-    "pagespec": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/page-spec/bin/mcp-bridge.mjs"]
-    }
-  }
-}
-```
-
-#### 4. Claude Desktop / Claude Code
-Add to `claude_desktop_config.json`:
-```json
-{
-  "mcpServers": {
-    "pagespec": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/page-spec/bin/mcp-bridge.mjs"]
-    }
-  }
-}
-```
-
----
-
-### 💬 Usage in AI Chat
-Once configured, simply open any authenticated PRD or API documentation page in your browser. In Antigravity, Codex, Cursor, or Claude Code, you can now prompt:
-> *"读取浏览器当前打开的需求文档 (PRD)，梳理关键业务逻辑与技术方案。"*  
-> 或:  
-> *"分析当前浏览器标签页中的 API 规范，生成对应的 TypeScript 类型定义与客户端 SDK。"*
-
-AI 客户端将自动通过 MCP 调用 `extract_prd_markdown` 或 `extract_api_markdown` 并获取完整的上下文！
-
----
-
-## 📂 Project Architecture
-
-```text
-page-spec/
-├── bin/
-│   └── mcp-bridge.mjs         # Stdio MCP Server <-> WebSocket Bridge for Cursor/Claude
-├── entrypoints/
-│   ├── background.ts          # Download orchestration, WebSocket MCP bridge, SidePanel
-│   ├── content.ts             # Content Script: DOM extraction, WebMCP & messaging
-│   ├── injected.ts            # Main World script: window.mcp polyfill & OpenAPI sniffer
-│   ├── popup/                 # Vue 3 Popup UI
-│   └── sidepanel/             # Vue 3 SidePanel UI (persistent monitoring)
-├── components/
-│   └── PageSpecPanel.vue      # Shared Vue 3 Composition API extraction panel
-├── core/
-│   ├── extractors/
-│   │   ├── prd-extractor.ts   # Document isolation, image concurrency & path rewriting
-│   │   └── api-extractor.ts   # OpenAPI JSON engine & DOM accordion parsing
-│   ├── markdown/
-│   │   └── turndown-rules.ts  # GFM + API HTTP badges + callout boxes rules
-│   ├── bundler/
-│   │   └── zip-builder.ts     # In-memory ZIP creation via fflate
-│   └── webmcp/
-│       └── mcp-provider.ts    # WebMCP tool definitions & executor
-├── utils/
-│   └── dom-helpers.ts         # Lazy-loader, canvas-to-blob, noise cleaner, sanitizer
-├── styles/
-│   └── main.css               # Global Tailwind CSS
-├── wxt.config.ts              # WXT build & cross-browser manifest configuration
-├── package.json
-└── tsconfig.json
-```
-
----
-
-## 📄 License
-
-MIT License &copy; 2026 PageSpec Contributors
+MIT License &copy; 2026 PageSpec

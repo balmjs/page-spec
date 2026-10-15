@@ -8,12 +8,13 @@ export default defineConfig({
   }),
   manifest: ({ browser }) => ({
     name: 'PageSpec',
-    description: 'Extract authenticated web PRDs & API specs into clean Markdown bundles, with WebMCP integration for Cursor and Claude Code.',
+    description: 'Extract authenticated web PRDs & API specs into clean Markdown bundles and prototype assets for AI agent coding.',
     permissions: [
       'activeTab',
       'storage',
       'downloads',
       'scripting',
+      'webNavigation',
       ...(browser === 'firefox' ? [] : ['sidePanel']),
     ],
     host_permissions: ['<all_urls>'],

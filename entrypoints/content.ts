@@ -2,13 +2,15 @@ import { defineContentScript } from 'wxt/utils/define-content-script';
 import { extractPrdBundle } from '../core/extractors/prd-extractor';
 import { extractApiDocumentation } from '../core/extractors/api-extractor';
 import { buildZipArchive } from '../core/bundler/zip-builder';
-import { executeMcpTool } from '../core/webmcp/mcp-provider';
+import { evaluateCurrentFrameContent } from '../core/extractors/frame-scorer';
 
 export default defineContentScript({
   matches: ['<all_urls>'],
+  allFrames: true,
+  matchAboutBlank: true,
   runAt: 'document_idle',
   main() {
-    // 1. Inject Main World script for WebMCP & OpenAPI sniffing
+    // 1. Inject Main World script for OpenAPI/Swagger sniffing
     try {
       const script = document.createElement('script');
       script.src = browser.runtime.getURL('/injected.js');
@@ -18,40 +20,7 @@ export default defineContentScript({
       // ignore script injection failures on restricted domains
     }
 
-    // 2. Handle communication with In-page WebMCP
-    window.addEventListener('message', async (event) => {
-      if (event.source !== window || !event.data || event.data.source !== 'PAGESPEC_PAGE') {
-        return;
-      }
-
-      if (event.data.type === 'CALL_MCP_TOOL') {
-        const { requestId, toolName } = event.data;
-        try {
-          const res = await executeMcpTool(toolName);
-          window.postMessage(
-            {
-              source: 'PAGESPEC_CONTENT',
-              type: 'MCP_TOOL_RESPONSE',
-              requestId,
-              result: res,
-            },
-            '*'
-          );
-        } catch (err: any) {
-          window.postMessage(
-            {
-              source: 'PAGESPEC_CONTENT',
-              type: 'MCP_TOOL_RESPONSE',
-              requestId,
-              error: err?.message || String(err),
-            },
-            '*'
-          );
-        }
-      }
-    });
-
-    // 3. Listen for requests from Popup / SidePanel / Background
+    // 2. Listen for requests from Popup / SidePanel / Background
     browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || typeof message !== 'object') return false;
 
@@ -61,20 +30,35 @@ export default defineContentScript({
           ok: true,
           url: window.location.href,
           title: document.title,
+          isTop: window === window.top,
         });
         return true;
       }
 
-      // Execute MCP Tool directly (e.g. from Background MCP Bridge)
-      if (message.type === 'EXECUTE_MCP_TOOL') {
-        executeMcpTool(message.toolName)
-          .then((res) => sendResponse({ ok: true, data: res }))
-          .catch((err) => sendResponse({ ok: false, error: err?.message || String(err) }));
+      // Query Frame Content Density & PRD Score
+      if (message.type === 'QUERY_FRAME_SCORE') {
+        try {
+          const scoreResult = evaluateCurrentFrameContent();
+          sendResponse(scoreResult);
+        } catch (err: any) {
+          sendResponse({
+            score: 0,
+            wordCount: 0,
+            imageCount: 0,
+            headingsCount: 0,
+            title: document.title || '',
+            url: window.location.href,
+            isTopFrame: window === window.top,
+            error: err?.message || String(err),
+          });
+        }
         return true;
       }
 
       // Extract PRD Bundle (Mode 1)
       if (message.type === 'EXTRACT_PRD') {
+        const saveMode = message.saveMode || 'zip'; // 'zip' | 'directory'
+
         (async () => {
           try {
             const result = await extractPrdBundle((current, total, msg) => {
@@ -87,35 +71,55 @@ export default defineContentScript({
               }).catch(() => {});
             });
 
-            // Build ZIP archive
-            const zipBlob = buildZipArchive({
-              markdown: result.markdown,
-              markdownFilename: 'index.md',
-              assets: result.assets,
-            });
+            // Convert assets into serializable format
+            const serializableAssets = result.assets.map((a) => ({
+              filename: a.filename,
+              data: Array.from(a.data),
+            }));
 
-            // Convert to base64 Data URL for background download
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64Url = reader.result as string;
-              const filename = `${result.sanitizedTitle}-prd.zip`;
-
-              browser.runtime.sendMessage({
-                type: 'TRIGGER_DOWNLOAD',
-                url: base64Url,
-                filename,
+            if (saveMode === 'zip') {
+              // Build ZIP archive and trigger browser download
+              const zipBlob = buildZipArchive({
+                markdown: result.markdown,
+                markdownFilename: 'index.md',
+                assets: result.assets,
               });
 
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64Url = reader.result as string;
+                const filename = `${result.sanitizedTitle}-prd.zip`;
+
+                browser.runtime.sendMessage({
+                  type: 'TRIGGER_DOWNLOAD',
+                  url: base64Url,
+                  filename,
+                });
+
+                sendResponse({
+                  ok: true,
+                  title: result.title,
+                  sanitizedTitle: result.sanitizedTitle,
+                  markdown: result.markdown,
+                  markdownPreview: result.markdown.slice(0, 3000),
+                  totalAssets: result.assets.length,
+                  warnings: result.warnings,
+                });
+              };
+              reader.readAsDataURL(zipBlob);
+            } else {
+              // Direct directory mode: return raw serializable assets
               sendResponse({
                 ok: true,
                 title: result.title,
                 sanitizedTitle: result.sanitizedTitle,
+                markdown: result.markdown,
                 markdownPreview: result.markdown.slice(0, 3000),
+                assets: serializableAssets,
                 totalAssets: result.assets.length,
                 warnings: result.warnings,
               });
-            };
-            reader.readAsDataURL(zipBlob);
+            }
           } catch (err: any) {
             sendResponse({ ok: false, error: err?.message || String(err) });
           }
@@ -125,6 +129,8 @@ export default defineContentScript({
 
       // Extract API Documentation (Mode 2)
       if (message.type === 'EXTRACT_API') {
+        const saveMode = message.saveMode || 'download'; // 'download' | 'directory'
+
         (async () => {
           try {
             const result = await extractApiDocumentation((current, total, msg) => {
@@ -137,29 +143,43 @@ export default defineContentScript({
               }).catch(() => {});
             });
 
-            // Trigger direct Markdown download
-            const blob = new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' });
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64Url = reader.result as string;
-              const filename = `${result.sanitizedTitle}-api.md`;
+            if (saveMode === 'download') {
+              // Trigger direct Markdown download
+              const blob = new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' });
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64Url = reader.result as string;
+                const filename = `${result.sanitizedTitle}-api.md`;
 
-              browser.runtime.sendMessage({
-                type: 'TRIGGER_DOWNLOAD',
-                url: base64Url,
-                filename,
-              });
+                browser.runtime.sendMessage({
+                  type: 'TRIGGER_DOWNLOAD',
+                  url: base64Url,
+                  filename,
+                });
 
+                sendResponse({
+                  ok: true,
+                  title: result.title,
+                  sanitizedTitle: result.sanitizedTitle,
+                  markdown: result.markdown,
+                  markdownPreview: result.markdown.slice(0, 3000),
+                  endpointsCount: result.endpointsCount,
+                  format: result.format,
+                });
+              };
+              reader.readAsDataURL(blob);
+            } else {
+              // Direct directory mode
               sendResponse({
                 ok: true,
                 title: result.title,
                 sanitizedTitle: result.sanitizedTitle,
+                markdown: result.markdown,
                 markdownPreview: result.markdown.slice(0, 3000),
                 endpointsCount: result.endpointsCount,
                 format: result.format,
               });
-            };
-            reader.readAsDataURL(blob);
+            }
           } catch (err: any) {
             sendResponse({ ok: false, error: err?.message || String(err) });
           }
