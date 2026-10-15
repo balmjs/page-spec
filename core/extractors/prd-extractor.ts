@@ -1,5 +1,6 @@
 import { Readability } from '@mozilla/readability';
 import { createTurndownService, generateYamlFrontmatter } from '../markdown/turndown-rules';
+import { preprocessSmartpageDom, postprocessMarkdown } from './smartpage-dom-preprocessor';
 import {
   sanitizeFilename,
   resolveImageSource,
@@ -31,6 +32,14 @@ export interface PrdExtractionResult {
  * Known container selectors for popular documentation platforms.
  */
 const PLATFORM_SELECTORS = [
+  // Tencent Docs / SmartPage / BlankPage
+  '#pages',
+  '.blankpage-editor',
+  '.smartpage-editor',
+  '[class*="blankpage-"]',
+  '[class*="smartpage-"]',
+  '.dui-editor',
+  '#weworkContainer #pages',
   // Feishu / Lark
   '.docx-page',
   '.bear-web-document',
@@ -68,6 +77,21 @@ const PLATFORM_SELECTORS = [
  * Locate the primary content container on the page.
  */
 export function findDocumentContainer(doc: Document = document): Element | null {
+  // If Tencent Docs (doc.weixin.qq.com / page.weixin.qq.com), prioritize full document container
+  if (isTencentDoc()) {
+    const tencentContainer =
+      doc.querySelector('#pages') ||
+      doc.querySelector('.blankpage-editor') ||
+      doc.querySelector('.smartpage-editor') ||
+      doc.querySelector('[class*="blankpage-"]') ||
+      doc.querySelector('[class*="smartpage-"]') ||
+      doc.querySelector('.dui-editor') ||
+      doc.querySelector('#weworkContainer');
+    if (tencentContainer && (tencentContainer.textContent?.trim().length || 0) > 30) {
+      return tencentContainer;
+    }
+  }
+
   for (const selector of PLATFORM_SELECTORS) {
     try {
       const el = doc.querySelector(selector);
@@ -199,6 +223,7 @@ export async function extractPrdBundle(
   // Clone container to avoid mutating live DOM
   const cloned = container.cloneNode(true) as HTMLElement;
   cleanNoiseElements(cloned);
+  preprocessSmartpageDom(cloned);
 
   onProgress?.(10, 100, '正在识别原型图与多媒体资源...');
 
@@ -264,33 +289,53 @@ export async function extractPrdBundle(
           return;
         }
 
-        let blob: Blob;
+        let buffer: ArrayBuffer | null = null;
         let mime = '';
 
         if (src.startsWith('data:')) {
           // Convert data URL
           const res = await fetch(src);
-          blob = await res.blob();
+          const blob = await res.blob();
           mime = blob.type;
+          buffer = await blob.arrayBuffer();
         } else {
-          // Authenticated fetch with credentials to bypass session walls
-          const resp = await fetch(src, {
-            credentials: 'include',
-            mode: 'cors',
-          });
-          if (!resp.ok) {
-            throw new Error(`HTTP ${resp.status}`);
+          try {
+            let resp: Response;
+            try {
+              resp = await fetch(src);
+            } catch {
+              resp = await fetch(src, { credentials: 'include' });
+            }
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const blob = await resp.blob();
+            mime = resp.headers.get('content-type') || blob.type || 'image/png';
+            buffer = await blob.arrayBuffer();
+          } catch (fetchErr) {
+            // Background script proxy fetch to bypass webpage CORS (e.g. for wdcdn.qpic.cn)
+            try {
+              const bgRes: any = await browser.runtime.sendMessage({
+                type: 'FETCH_IMAGE_DATA',
+                url: src,
+              });
+              if (bgRes && bgRes.ok && Array.isArray(bgRes.data)) {
+                mime = bgRes.mime || 'image/png';
+                buffer = new Uint8Array(bgRes.data).buffer;
+              } else {
+                throw fetchErr;
+              }
+            } catch {
+              throw fetchErr;
+            }
           }
-          blob = await resp.blob();
-          mime = resp.headers.get('content-type') || blob.type;
         }
+
+        if (!buffer) throw new Error('未能获取有效图片二进制数据');
 
         const ext = getExtensionFromMimeOrUrl(mime, src);
         assetCounter++;
         const filename = `assets/prototype-${String(assetCounter).padStart(3, '0')}.${ext}`;
         const localPath = `./${filename}`;
 
-        const buffer = await blob.arrayBuffer();
         assets.push({
           filename,
           data: new Uint8Array(buffer),
@@ -375,6 +420,7 @@ export async function extractPrdBundle(
   // 3. Convert mutated DOM tree into GFM Markdown
   const turndown = createTurndownService();
   const rawMarkdown = turndown.turndown(cloned.innerHTML);
+  const cleanMarkdown = postprocessMarkdown(rawMarkdown);
 
   // 4. Prepend Frontmatter
   const frontmatter = generateYamlFrontmatter({
@@ -385,7 +431,7 @@ export async function extractPrdBundle(
     ...(warnings.length > 0 ? { warnings } : {}),
   });
 
-  const fullMarkdown = `${frontmatter}\n# ${rawTitle}\n\n${rawMarkdown.trim()}\n`;
+  const fullMarkdown = `${frontmatter}\n# ${rawTitle}\n\n${cleanMarkdown}\n`;
 
   onProgress?.(100, 100, 'PRD 提取与打包准备完成');
 

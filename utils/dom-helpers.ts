@@ -143,40 +143,51 @@ export function cleanNoiseElements(root: Element): void {
     '#comments',
     '.footer',
     '#footer',
-    '.header',
-    '#header',
+    '.site-header',
+    '#site-header',
+    '.global-header',
     '.nav',
     '#nav',
     '.navigation',
     '.ads',
     '.advertisement',
-    '.banner',
     '.cookie-banner',
     '.popover',
     '.tooltip',
     '.dropdown-menu',
-    '.action-bar',
-    '.floating-toolbar',
     '.doc-feedback',
     '.feedback-widget',
     '.social-share',
     '.like-button',
     '.print-hide',
-    '[aria-hidden="true"]',
   ];
 
   for (const sel of noiseSelectors) {
     try {
       const elements = root.querySelectorAll(sel);
       elements.forEach((el) => {
-        // Protect headings or code blocks that might have accidental class overlap
+        // Protect headings, tables, or code blocks that might have accidental class overlap
         if (!['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'CODE', 'TABLE'].includes(el.tagName)) {
+          // If the element contains substantial text (> 50 chars), keep it
+          if ((el.textContent?.trim().length || 0) > 50) return;
           el.remove();
         }
       });
     } catch {
       // Ignore querySelector exceptions
     }
+  }
+
+  // Handle [aria-hidden="true"] separately: only remove if it doesn't contain readable text
+  try {
+    const ariaHidden = root.querySelectorAll('[aria-hidden="true"]');
+    ariaHidden.forEach((el) => {
+      if (!el.textContent?.trim()) {
+        el.remove();
+      }
+    });
+  } catch {
+    // ignore
   }
 }
 
