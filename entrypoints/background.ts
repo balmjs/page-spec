@@ -46,6 +46,25 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Proxy image download across domains to bypass CORS restrictions
+    if (message.type === 'FETCH_IMAGE_DATA') {
+      const { url } = message;
+      (async () => {
+        try {
+          const resp = await fetch(url);
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const blob = await resp.blob();
+          const mime = resp.headers.get('content-type') || blob.type || 'image/png';
+          const buffer = await blob.arrayBuffer();
+          const data = Array.from(new Uint8Array(buffer));
+          sendResponse({ ok: true, data, mime });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
     // Detect Best PRD Frame in Active Tab
     if (message.type === 'DETECT_BEST_PRD_FRAME') {
       const tabId = message.tabId;

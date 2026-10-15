@@ -149,11 +149,22 @@ import { isTencentDoc, extractTencentDocBundle } from './tencent-doc-extractor';
  * Extract authenticated PRD content, rewrite assets locally, and bundle into Markdown.
  */
 export async function extractPrdBundle(
-  onProgress?: (current: number, total: number, message: string) => void
+  onProgress?: (current: number, total: number, message: string) => void,
+  engineMode: 'auto' | 'tencent' | 'dom' = 'auto'
 ): Promise<PrdExtractionResult> {
-  // 0. Dedicated native extractor for Tencent Docs (doc.weixin.qq.com / docs.qq.com)
-  if (isTencentDoc()) {
-    return await extractTencentDocBundle(onProgress);
+  // 0. Dedicated native extractor for Tencent Docs (doc.weixin.qq.com / docs.qq.com / page.weixin.qq.com)
+  const shouldUseTencent =
+    engineMode === 'tencent' || (engineMode === 'auto' && isTencentDoc());
+
+  if (shouldUseTencent) {
+    try {
+      return await extractTencentDocBundle(onProgress);
+    } catch (err: any) {
+      if (engineMode === 'tencent') {
+        throw err;
+      }
+      console.warn('[PageSpec] 腾讯文档专用提取失败，降级为通用 DOM 提取:', err);
+    }
   }
 
   let rawTitle = document.title?.trim() || '';

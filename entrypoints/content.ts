@@ -58,6 +58,7 @@ export default defineContentScript({
       // Extract PRD Bundle (Mode 1)
       if (message.type === 'EXTRACT_PRD') {
         const saveMode = message.saveMode || 'zip'; // 'zip' | 'directory'
+        const engineMode = message.engineMode || 'auto'; // 'auto' | 'tencent' | 'dom'
 
         (async () => {
           try {
@@ -69,7 +70,7 @@ export default defineContentScript({
                 total,
                 message: msg,
               }).catch(() => {});
-            });
+            }, engineMode);
 
             // Convert assets into serializable format
             const serializableAssets = result.assets.map((a) => ({

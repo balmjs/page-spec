@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onMounted, computed, watch } from 'vue';
 import {
   FolderArchive,
   Code2,
@@ -32,8 +32,10 @@ const props = defineProps<{
 }>();
 
 type ActiveTab = 'prd' | 'api' | 'dir';
+export type EngineMode = 'auto' | 'tencent' | 'dom';
 
 const currentTab = ref<ActiveTab>('prd');
+const engineMode = ref<EngineMode>('auto');
 const pageTitle = ref('正在检测页面与框架...');
 const pageUrl = ref('');
 const isExtracting = ref(false);
@@ -80,6 +82,16 @@ const activeHost = computed(() => {
 
 // Initialize active tab and inspect frame hierarchy
 onMounted(async () => {
+  // 0. Load saved engine mode
+  try {
+    const stored = await browser.storage.local.get('pagespec_engine_mode');
+    if (stored && stored.pagespec_engine_mode) {
+      engineMode.value = stored.pagespec_engine_mode as EngineMode;
+    }
+  } catch (err) {
+    console.warn('[PageSpec] Failed to load engine mode:', err);
+  }
+
   // 1. Get saved directory handle
   try {
     const handle = await getSavedRequirementsDirectory();
@@ -116,6 +128,10 @@ onMounted(async () => {
       progressMessage.value = msg.message;
     }
   });
+});
+
+watch(engineMode, (val) => {
+  browser.storage.local.set({ pagespec_engine_mode: val });
 });
 
 async function detectFrames(tabId: number) {
@@ -196,6 +212,7 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
       {
         type: 'EXTRACT_PRD',
         saveMode: mode,
+        engineMode: engineMode.value,
       },
       { frameId }
     );
@@ -452,6 +469,22 @@ function openSidePanel() {
             <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               保留当前会话鉴权态。自动穿透嵌套菜单 iframe，锁定正文框架，并发抓取高分辨率原型图并重写为本地相对路径。
             </p>
+          </div>
+
+          <!-- Engine Selector -->
+          <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-750 border border-slate-200 dark:border-slate-700 text-xs">
+            <span class="text-slate-500 dark:text-slate-400 font-medium flex items-center space-x-1.5">
+              <Sparkles class="w-3.5 h-3.5 text-indigo-500" />
+              <span>解析引擎</span>
+            </span>
+            <select
+              v-model="engineMode"
+              class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded px-2 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+            >
+              <option value="auto">自动识别 (推荐)</option>
+              <option value="tencent">腾讯文档 AST (智能文档)</option>
+              <option value="dom">通用网页 DOM</option>
+            </select>
           </div>
 
           <!-- Action Buttons -->

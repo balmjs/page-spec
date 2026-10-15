@@ -6,7 +6,12 @@ import type { PrdExtractionResult, ExtractedAssetMeta } from './prd-extractor';
 export function isTencentDoc(url: string = window.location.href): boolean {
   try {
     const host = new URL(url).hostname;
-    return host.includes('doc.weixin.qq.com') || host.includes('docs.qq.com');
+    return (
+      host.includes('doc.weixin.qq.com') ||
+      host.includes('docs.qq.com') ||
+      host.includes('page.weixin.qq.com') ||
+      host.includes('txdocs.qq.com')
+    );
   } catch {
     return false;
   }
@@ -257,11 +262,19 @@ function detectSectionHeading(lineText: string): number {
     }
   }
 
-  // Level 3 Headings ("(1) 交互逻辑", "1.1 功能说明", "（一）设计规范")
+  // Level 3 Headings ("(1) 交互逻辑", "1.1 功能说明", "4.1、预览场景", "（一）设计规范")
   if (
     /^(?:[（(][1-9一二三四五六七八九十]+[)）]|[1-9]\.[1-9]\d?[.、])\s*[^。；;!！?？\n]{1,25}$/.test(
       t
     )
+  ) {
+    return 3;
+  }
+
+  // Level 3 Emoji / Callout Headings (e.g. "✅ 正常点", "🎯 期望改动 + ❌ 原有问题", "📌 核心说明", "⚠️ 注意事项")
+  if (
+    /^(?:[✅✔️☑️🎯❌⚡️💡📌⚠️🔍🚀🔥🌟⭐️✨❓🚩🏷️])\s*[^。；;!！?？\n]{1,35}$/u.test(t) ||
+    /^(?:🎯\s*期望改动|❌\s*原有问题|✅\s*正常点)/.test(t)
   ) {
     return 3;
   }
@@ -312,7 +325,8 @@ export async function extractTencentDocBundle(
   const urlParams = new URLSearchParams(window.location.search);
   const scode = urlParams.get('scode') || '';
   const pathParts = window.location.pathname.split('/');
-  const docId = urlParams.get('id') || pathParts[pathParts.length - 1];
+  // Sub-page in smartpage / blankpage notebook is in 'p', fallback to 'id' or last path segment
+  const docId = urlParams.get('p') || urlParams.get('id') || pathParts[pathParts.length - 1];
 
   if (!docId) {
     throw new Error('未能从当前腾讯文档 URL 中解析出有效 docId');
@@ -515,25 +529,47 @@ export async function extractTencentDocBundle(
   for (let idx = 0; idx < imageEntries.length; idx++) {
     const [pos, img] = imageEntries[idx]!;
     try {
-      // First attempt standard fetch (handles public CDNs like wdcdn.qpic.cn without credentials/CORS issues)
-      let imgResp: Response;
+      let buffer: ArrayBuffer | null = null;
+      let mime = 'image/png';
+
       try {
-        imgResp = await fetch(img.url);
-      } catch {
-        imgResp = await fetch(img.url, { credentials: 'include' });
+        let imgResp: Response;
+        try {
+          imgResp = await fetch(img.url);
+        } catch {
+          imgResp = await fetch(img.url, { credentials: 'include' });
+        }
+
+        if (!imgResp.ok) throw new Error(`HTTP ${imgResp.status}`);
+        const blob = await imgResp.blob();
+        mime = imgResp.headers.get('content-type') || blob.type || 'image/png';
+        buffer = await blob.arrayBuffer();
+      } catch (directErr) {
+        // Fallback to background script proxy fetch to bypass webpage CORS (e.g. for wdcdn.qpic.cn)
+        try {
+          const bgRes: any = await browser.runtime.sendMessage({
+            type: 'FETCH_IMAGE_DATA',
+            url: img.url,
+          });
+          if (bgRes && bgRes.ok && Array.isArray(bgRes.data)) {
+            mime = bgRes.mime || 'image/png';
+            buffer = new Uint8Array(bgRes.data).buffer;
+          } else {
+            throw directErr;
+          }
+        } catch {
+          throw directErr;
+        }
       }
 
-      if (!imgResp.ok) throw new Error(`HTTP ${imgResp.status}`);
+      if (!buffer) throw new Error('未能获取有效图片二进制数据');
 
-      const blob = await imgResp.blob();
-      const mime = imgResp.headers.get('content-type') || blob.type || 'image/png';
       const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('svg') ? 'svg' : 'png';
 
       assetCounter++;
       const filename = `assets/prototype-${String(assetCounter).padStart(3, '0')}.${ext}`;
       const localPath = `./${filename}`;
 
-      const buffer = await blob.arrayBuffer();
       assets.push({
         filename,
         data: new Uint8Array(buffer),
@@ -549,7 +585,7 @@ export async function extractTencentDocBundle(
 
       localImageMap[pos] = localPath;
     } catch (err: any) {
-      warnings.push(`图片抓取失败: ${err?.message || err}`);
+      warnings.push(`图片抓取失败 [${img.url}]: ${err?.message || err}`);
       localImageMap[pos] = img.url; // fallback to remote URL
     }
 
