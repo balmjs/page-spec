@@ -11,6 +11,7 @@ dist
 *.log
 .DS_Store
 *.local
+.temp_release_notes.md
 
 # IDE
 .vscode/*

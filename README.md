@@ -50,10 +50,25 @@ pnpm dev:firefox
 # 构建 Chrome MV3
 pnpm build
 
-# 打包发布 ZIP
+# 打包发布 ZIP (Chrome / Firefox)
 pnpm zip
+pnpm zip:firefox
 ```
 构建产物输出于 `.output/chrome-mv3`，直接在 Chrome 扩展管理界面 (`chrome://extensions/`) 点击 **“加载已解压的扩展程序”** 即可使用。
+
+### 3. 一键打包并发布至 GitHub Releases
+```bash
+# 交互式选择版本号、构建双浏览器 ZIP 包、更新 Tag 并直传 GitHub Releases
+pnpm release
+
+# 快捷指定版本类型
+pnpm release patch   # 小版本升级 (如 1.0.0 -> 1.0.1)
+pnpm release minor   # 次版本升级 (如 1.0.0 -> 1.1.0)
+pnpm release major   # 主版本升级 (如 1.0.0 -> 2.0.0)
+
+# 预演模式（仅打包验证，不创建 Tag、不提交或推送）
+pnpm release --dry-run
+```
 
 ---
 
