@@ -12,7 +12,8 @@
     "build:firefox": "wxt build -b firefox",
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
-    "typecheck": "vue-tsc --noEmit",
+    "postinstall": "wxt prepare",
+    "typecheck": "wxt prepare && vue-tsc --noEmit",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {
