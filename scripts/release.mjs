@@ -232,6 +232,13 @@ async function main() {
   const tagName = `v${targetVersion}`;
   info(`目标版本: ${colors.bold}${colors.green}${tagName}${colors.reset}`);
 
+  // 检查本地是否已存在该 Tag
+  const localTag = run(`git tag -l "${tagName}"`);
+  if (localTag) {
+    error(`本地已存在 Git Tag [${tagName}]！如果要重新发布该版本，请先删除旧 Tag 或选择新版本号。`);
+    process.exit(1);
+  }
+
   // 4. 类型检查与代码构建
   if (!skipBuild) {
     info('执行 TypeScript 类型检查 (pnpm typecheck)...');
@@ -289,9 +296,15 @@ async function main() {
   const currentBranch = run('git rev-parse --abbrev-ref HEAD');
   info(`当前 Git 分支: ${currentBranch}`);
 
-  info('提交版本变更与创建 Git Tag...');
+  info('准备 Git 提交与创建 Tag...');
   run(`git add package.json`);
-  run(`git commit -m "chore(release): ${tagName}"`);
+  const stagedDiff = run('git diff --cached --name-only') || '';
+  if (stagedDiff.length > 0) {
+    info(`提交版本变更: chore(release): ${tagName}`);
+    run(`git commit -m "chore(release): ${tagName}"`);
+  } else {
+    info(`package.json 版本已经是 ${targetVersion}，无需生成空 commit，直接基于当前 HEAD 创建 Tag。`);
+  }
   run(`git tag -a "${tagName}" -m "Release ${tagName}"`);
   success(`已创建 Git Tag: ${tagName}`);
 
