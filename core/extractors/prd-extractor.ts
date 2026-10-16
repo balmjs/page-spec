@@ -8,11 +8,16 @@ import {
 import {
   sanitizeFilename,
   resolveImageSource,
+  extractBackgroundImageUrl,
   isSignificantVisualElement,
   canvasToBlob,
   svgToBlob,
   cleanNoiseElements,
+  asyncPool,
+  getExtensionFromMimeOrUrl,
+  base64ToUint8Array,
 } from '../../utils/dom-helpers';
+
 import type { BundleAsset } from '../bundler/zip-builder';
 
 export interface ExtractedAssetMeta {
@@ -124,53 +129,6 @@ export function findDocumentContainer(doc: Document = document): Element | null 
   return doc.body;
 }
 
-/**
- * Run a pool of async tasks with concurrency limit.
- */
-async function asyncPool<T, R>(
-  poolLimit: number,
-  array: T[],
-  iteratorFn: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const ret: Promise<R>[] = [];
-  const executing: Promise<any>[] = [];
-
-  for (let i = 0; i < array.length; i++) {
-    const item = array[i]!;
-    const p = Promise.resolve().then(() => iteratorFn(item, i));
-    ret.push(p);
-
-    if (poolLimit <= array.length) {
-      const e: Promise<any> = p.then(() => executing.splice(executing.indexOf(e), 1));
-      executing.push(e);
-      if (executing.length >= poolLimit) {
-        await Promise.race(executing);
-      }
-    }
-  }
-  return Promise.all(ret);
-}
-
-/**
- * Deduce file extension from Content-Type header or URL.
- */
-function getExtensionFromMimeOrUrl(mime: string | null, url: string): string {
-  if (mime) {
-    if (mime.includes('png')) return 'png';
-    if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
-    if (mime.includes('webp')) return 'webp';
-    if (mime.includes('svg')) return 'svg';
-    if (mime.includes('gif')) return 'gif';
-  }
-  const cleanUrl = url.split('?')[0]?.split('#')[0] || '';
-  const match = cleanUrl.match(/\.(png|jpe?g|webp|svg|gif|bmp|avif)$/i);
-  if (match && match[1]) {
-    const ext = match[1].toLowerCase();
-    return ext === 'jpeg' ? 'jpg' : ext;
-  }
-  return 'png';
-}
-
 import { isTencentDoc, extractTencentDocBundle } from './tencent-doc-extractor';
 
 /**
@@ -235,20 +193,43 @@ export async function extractPrdBundle(
     }
   }
 
-  // 2. Mark live DOM with computed styles (bold, headings, video attachments) before cloning
-  const unmarkLive = markLiveDomForSmartpage(container);
+  // 2. Mark live DOM with computed styles (bold, headings, video attachments, visual dimensions) before cloning
+  const { cleanup, canvasMap } = markLiveDomForSmartpage(container);
   const cloned = container.cloneNode(true) as HTMLElement;
-  unmarkLive();
+  cleanup();
 
   cleanNoiseElements(cloned, isTencentDoc());
   preprocessSmartpageDom(cloned);
 
   onProgress?.(10, 100, '正在识别原型图与多媒体资源...');
 
-  // 1. Gather all candidates
-  const images = Array.from(cloned.querySelectorAll('img'));
-  const canvases = Array.from(cloned.querySelectorAll('canvas'));
-  const svgs = Array.from(cloned.querySelectorAll('svg'));
+  // Support background-image prototypes on SmartPage blocks
+  const bgElements = Array.from(cloned.querySelectorAll('[style*="background-image"], [style*="background:"]'));
+  for (const bgEl of bgElements) {
+    if (bgEl.querySelector('img, canvas, svg')) continue;
+    const bgUrl = extractBackgroundImageUrl(bgEl);
+    if (bgUrl && !/\.(?:mp4|mov|webm|avi)/i.test(bgUrl)) {
+      const img = document.createElement('img');
+      img.setAttribute('src', bgUrl);
+      img.setAttribute('alt', (bgEl as HTMLElement).title || bgEl.getAttribute('aria-label') || '原型图');
+      bgEl.replaceWith(img);
+    }
+  }
+
+  // Support <video poster="..."> video previews
+  const videoElements = Array.from(cloned.querySelectorAll('video[poster]'));
+  for (const v of videoElements) {
+    const poster = v.getAttribute('poster');
+    if (poster && !/\.(?:mp4|mov|webm|avi)/i.test(poster)) {
+      const img = document.createElement('img');
+      img.setAttribute('src', poster);
+      img.setAttribute('alt', v.getAttribute('title') || '视频演示');
+      v.replaceWith(img);
+    }
+  }
+
+  // 1. Gather all candidates in strict DOM tree order
+  const mediaElements = Array.from(cloned.querySelectorAll('img, canvas, svg'));
 
   interface TargetItem {
     element: Element;
@@ -258,44 +239,37 @@ export async function extractPrdBundle(
 
   const targets: TargetItem[] = [];
 
-  for (const img of images) {
-    if (!isSignificantVisualElement(img)) {
-      // Remove tiny icons/avatars to keep markdown clean
-      img.remove();
-      continue;
+  for (const el of mediaElements) {
+    if (el.tagName === 'IMG') {
+      const img = el as HTMLImageElement;
+      if (!isSignificantVisualElement(img)) {
+        img.remove();
+        continue;
+      }
+      const realSrc = img.getAttribute('data-ps-resolved-src') || resolveImageSource(img);
+      // Skip only if the resolved source is directly an actual raw video stream file
+      if (realSrc && /\.(?:mp4|mov|webm|avi)(?:\?.*)?$/i.test(realSrc)) {
+        continue;
+      }
+      if (realSrc) {
+        targets.push({ element: img, type: 'img', srcUrl: realSrc });
+      }
+    } else if (el.tagName === 'CANVAS') {
+      const canvas = el as HTMLCanvasElement;
+      if (!isSignificantVisualElement(canvas)) {
+        canvas.remove();
+        continue;
+      }
+      targets.push({ element: canvas, type: 'canvas' });
+    } else if (el.tagName.toLowerCase() === 'svg') {
+      const svg = el as unknown as SVGSVGElement;
+      if (svg.parentElement?.closest('svg')) continue;
+      if (!isSignificantVisualElement(svg)) {
+        svg.remove();
+        continue;
+      }
+      targets.push({ element: svg, type: 'svg' });
     }
-    const alt = img.getAttribute('alt') || '';
-    const src = img.getAttribute('src') || '';
-    // Skip video attachments so they are not downloaded as fake prototypes
-    if (
-      img.hasAttribute('data-ps-video') ||
-      /\.(?:mp4|mov|webm|avi)(?:\?.*)?$/i.test(alt) ||
-      /\.(?:mp4|mov|webm|avi)(?:\?.*)?$/i.test(src)
-    ) {
-      continue;
-    }
-
-    const realSrc = resolveImageSource(img);
-    if (realSrc) {
-      targets.push({ element: img, type: 'img', srcUrl: realSrc });
-    }
-  }
-
-  for (const canvas of canvases) {
-    if (!isSignificantVisualElement(canvas)) {
-      canvas.remove();
-      continue;
-    }
-    targets.push({ element: canvas, type: 'canvas' });
-  }
-
-  for (const svg of svgs) {
-    if (!isSignificantVisualElement(svg)) {
-      // Remove tiny decorative svgs
-      svg.remove();
-      continue;
-    }
-    targets.push({ element: svg, type: 'svg' });
   }
 
   const totalAssets = targets.length;
@@ -304,7 +278,6 @@ export async function extractPrdBundle(
   const assets: BundleAsset[] = [];
   const assetMetadata: ExtractedAssetMeta[] = [];
   const urlToLocalMap = new Map<string, string>();
-  let assetCounter = 0;
 
   // 2. Fetch and process assets with concurrency limit 5
   await asyncPool(5, targets, async (target, index) => {
@@ -346,9 +319,15 @@ export async function extractPrdBundle(
                 type: 'FETCH_IMAGE_DATA',
                 url: src,
               });
-              if (bgRes && bgRes.ok && Array.isArray(bgRes.data)) {
+              if (bgRes && bgRes.ok) {
                 mime = bgRes.mime || 'image/png';
-                buffer = new Uint8Array(bgRes.data).buffer;
+                if (bgRes.base64) {
+                  buffer = base64ToUint8Array(bgRes.base64).buffer as ArrayBuffer;
+                } else if (Array.isArray(bgRes.data)) {
+                  buffer = new Uint8Array(bgRes.data).buffer as ArrayBuffer;
+                } else {
+                  throw fetchErr;
+                }
               } else {
                 throw fetchErr;
               }
@@ -361,8 +340,8 @@ export async function extractPrdBundle(
         if (!buffer) throw new Error('未能获取有效图片二进制数据');
 
         const ext = getExtensionFromMimeOrUrl(mime, src);
-        assetCounter++;
-        const filename = `assets/prototype-${String(assetCounter).padStart(3, '0')}.${ext}`;
+        const assetNum = index + 1;
+        const filename = `assets/${cleanTitle}/prototype-${String(assetNum).padStart(3, '0')}.${ext}`;
         const localPath = `./${filename}`;
 
         assets.push({
@@ -382,11 +361,13 @@ export async function extractPrdBundle(
           alt: imgEl.alt,
         });
       } else if (target.type === 'canvas') {
-        const canvas = target.element as HTMLCanvasElement;
-        const blob = await canvasToBlob(canvas);
+        const clonedCanvas = target.element as HTMLCanvasElement;
+        const canvasId = clonedCanvas.getAttribute('data-ps-canvas-id');
+        const liveCanvas = (canvasId && canvasMap.get(canvasId)) || clonedCanvas;
+        const blob = await canvasToBlob(liveCanvas);
         if (blob) {
-          assetCounter++;
-          const filename = `assets/prototype-${String(assetCounter).padStart(3, '0')}.png`;
+          const assetNum = index + 1;
+          const filename = `assets/${cleanTitle}/prototype-${String(assetNum).padStart(3, '0')}.png`;
           const localPath = `./${filename}`;
           const buffer = await blob.arrayBuffer();
           assets.push({
@@ -397,21 +378,21 @@ export async function extractPrdBundle(
           // Replace canvas in cloned DOM with img tag
           const img = document.createElement('img');
           img.setAttribute('src', localPath);
-          img.setAttribute('alt', `Canvas Prototype ${assetCounter}`);
+          img.setAttribute('alt', `Canvas Prototype ${assetNum}`);
           target.element.replaceWith(img);
 
           assetMetadata.push({
             filename,
             originalUrl: '[inline-canvas]',
-            width: canvas.width,
-            height: canvas.height,
+            width: liveCanvas.width || clonedCanvas.width,
+            height: liveCanvas.height || clonedCanvas.height,
           });
         }
       } else if (target.type === 'svg') {
         const svg = target.element as SVGSVGElement;
         const blob = svgToBlob(svg);
-        assetCounter++;
-        const filename = `assets/prototype-${String(assetCounter).padStart(3, '0')}.svg`;
+        const assetNum = index + 1;
+        const filename = `assets/${cleanTitle}/prototype-${String(assetNum).padStart(3, '0')}.svg`;
         const localPath = `./${filename}`;
         const buffer = await blob.arrayBuffer();
         assets.push({
@@ -422,7 +403,7 @@ export async function extractPrdBundle(
         // Replace SVG in cloned DOM with img tag
         const img = document.createElement('img');
         img.setAttribute('src', localPath);
-        img.setAttribute('alt', `Vector Diagram ${assetCounter}`);
+        img.setAttribute('alt', `Vector Diagram ${assetNum}`);
         target.element.replaceWith(img);
 
         assetMetadata.push({
@@ -439,7 +420,7 @@ export async function extractPrdBundle(
       }
     } finally {
       const currentDone = index + 1;
-      const pct = 20 + Math.floor((currentDone / totalAssets) * 60);
+      const pct = 20 + Math.floor((currentDone / Math.max(1, totalAssets)) * 60);
       onProgress?.(pct, 100, `资源抓取进度: ${currentDone}/${totalAssets}...`);
     }
   });

@@ -3,6 +3,7 @@ import { extractPrdBundle } from '../core/extractors/prd-extractor';
 import { extractApiDocumentation } from '../core/extractors/api-extractor';
 import { buildZipArchive } from '../core/bundler/zip-builder';
 import { evaluateCurrentFrameContent } from '../core/extractors/frame-scorer';
+import { uint8ArrayToBase64 } from '../utils/dom-helpers';
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -72,17 +73,17 @@ export default defineContentScript({
               }).catch(() => {});
             }, engineMode);
 
-            // Convert assets into serializable format
+            // Convert assets into serializable format with Base64
             const serializableAssets = result.assets.map((a) => ({
               filename: a.filename,
-              data: Array.from(a.data),
+              base64: uint8ArrayToBase64(a.data),
             }));
 
             if (saveMode === 'zip') {
               // Build ZIP archive and trigger browser download
               const zipBlob = buildZipArchive({
                 markdown: result.markdown,
-                markdownFilename: 'index.md',
+                markdownFilename: `${result.sanitizedTitle}.md`,
                 assets: result.assets,
               });
 

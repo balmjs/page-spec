@@ -6,31 +6,92 @@
  * before Turndown HTML-to-Markdown conversion.
  */
 
+import { resolveImageSource, isSignificantVisualElement } from '../../utils/dom-helpers';
+
+export interface LiveDomCaptureResult {
+  cleanup: () => void;
+  canvasMap: Map<string, HTMLCanvasElement>;
+}
+
 /**
- * Mark live DOM elements with computed style metadata (bold, heading, video, subitem)
- * BEFORE cloning. Returns a cleanup function to revert attributes on the live DOM.
+ * Mark live DOM elements with computed style metadata (bold, heading, video, subitem, visual metrics)
+ * BEFORE cloning. Returns canvasMap and a cleanup function to revert attributes on the live DOM.
  */
-export function markLiveDomForSmartpage(container: Element): () => void {
+export function markLiveDomForSmartpage(container: Element): LiveDomCaptureResult {
   const markedEls: Element[] = [];
+  const canvasMap = new Map<string, HTMLCanvasElement>();
 
   try {
     const all = Array.from(container.querySelectorAll('*'));
     for (let i = 0; i < all.length; i++) {
       const el = all[i] as HTMLElement;
-      if (!el || !el.style) continue;
+      if (!el) continue;
 
-      // 1. Check video attachment images (<img alt="xxx.mp4"> or <img src="...mp4">)
+      // 0. Visual measurement and pre-capture on Live DOM
       if (el.tagName === 'IMG') {
         const img = el as HTMLImageElement;
+        const rect = img.getBoundingClientRect();
+        const w = img.naturalWidth || img.width || rect.width;
+        const h = img.naturalHeight || img.height || rect.height;
+        if (w > 0) el.setAttribute('data-ps-width', String(Math.round(w)));
+        if (h > 0) el.setAttribute('data-ps-height', String(Math.round(h)));
+
+        const realSrc = resolveImageSource(img);
+        if (realSrc) {
+          el.setAttribute('data-ps-resolved-src', realSrc);
+        }
+
+        if (!isSignificantVisualElement(el)) {
+          el.setAttribute('data-ps-ignore', 'true');
+        }
+        markedEls.push(el);
+
+        // Check video attachment images (<img alt="xxx.mp4"> or <img src="...mp4">)
         const alt = img.getAttribute('alt') || '';
         const src = img.getAttribute('src') || '';
         const videoMatch = (alt + ' ' + src).match(/([a-zA-Z0-9_\-\.]+\.(?:mp4|mov|webm|avi))/i);
         if (videoMatch && videoMatch[1]) {
           el.setAttribute('data-ps-video', videoMatch[1]);
-          markedEls.push(el);
-          continue;
+          // Video preview posters must never be ignored
+          el.removeAttribute('data-ps-ignore');
         }
+        continue;
       }
+
+      if (el.tagName === 'CANVAS') {
+        const canvas = el as HTMLCanvasElement;
+        const rect = canvas.getBoundingClientRect();
+        const w = canvas.width || rect.width;
+        const h = canvas.height || rect.height;
+        if (w > 0) el.setAttribute('data-ps-width', String(Math.round(w)));
+        if (h > 0) el.setAttribute('data-ps-height', String(Math.round(h)));
+
+        if (isSignificantVisualElement(canvas)) {
+          const cid = `canvas-${canvasMap.size + 1}`;
+          el.setAttribute('data-ps-canvas-id', cid);
+          canvasMap.set(cid, canvas);
+        } else {
+          el.setAttribute('data-ps-ignore', 'true');
+        }
+        markedEls.push(el);
+        continue;
+      }
+
+      if (el.tagName === 'SVG' && !el.parentElement?.closest('svg')) {
+        const svg = el as unknown as SVGSVGElement;
+        const rect = svg.getBoundingClientRect();
+        const w = svg.width?.baseVal?.value || rect.width;
+        const h = svg.height?.baseVal?.value || rect.height;
+        if (w > 0) el.setAttribute('data-ps-width', String(Math.round(w)));
+        if (h > 0) el.setAttribute('data-ps-height', String(Math.round(h)));
+
+        if (!isSignificantVisualElement(svg)) {
+          el.setAttribute('data-ps-ignore', 'true');
+        }
+        markedEls.push(el);
+      }
+
+      if (!el.style) continue;
 
       // Read computed styles in live document context
       const cs = window.getComputedStyle(el);
@@ -76,20 +137,64 @@ export function markLiveDomForSmartpage(container: Element): () => void {
         el.setAttribute('data-ps-subitem', 'true');
         markedEls.push(el);
       }
+
+      // 5. Check blockquote / quote callouts
+      if (el.tagName === 'BLOCKQUOTE') {
+        el.setAttribute('data-ps-quote', 'true');
+        markedEls.push(el);
+      } else if (
+        el.tagName !== 'TABLE' &&
+        el.tagName !== 'TD' &&
+        el.tagName !== 'TH' &&
+        el.tagName !== 'TR' &&
+        el.tagName !== 'TBODY' &&
+        el.tagName !== 'THEAD'
+      ) {
+        const className = (el.className || '').toString().toLowerCase();
+        const isQuoteClass =
+          className.includes('blockquote') ||
+          className.includes('callout-quote') ||
+          (className.includes('quote') && !className.includes('quotation'));
+        const borderLeftW = parseFloat(cs.borderLeftWidth) || 0;
+        const borderLeftStyle = cs.borderLeftStyle;
+        const borderTopW = parseFloat(cs.borderTopWidth) || 0;
+        const borderRightW = parseFloat(cs.borderRightWidth) || 0;
+        const borderBottomW = parseFloat(cs.borderBottomWidth) || 0;
+
+        const hasLeftQuoteBorder =
+          borderLeftW >= 2 &&
+          borderLeftStyle === 'solid' &&
+          borderTopW === 0 &&
+          borderRightW === 0 &&
+          borderBottomW === 0;
+
+        if (isQuoteClass || hasLeftQuoteBorder) {
+          el.setAttribute('data-ps-quote', 'true');
+          markedEls.push(el);
+        }
+      }
     }
   } catch (err) {
     console.warn('[PageSpec] Failed to mark live DOM:', err);
   }
 
   // Cleanup function removes attributes from live webpage
-  return () => {
+  const cleanup = () => {
     for (const el of markedEls) {
       el.removeAttribute('data-ps-video');
       el.removeAttribute('data-ps-heading');
       el.removeAttribute('data-ps-bold');
       el.removeAttribute('data-ps-subitem');
+      el.removeAttribute('data-ps-quote');
+      el.removeAttribute('data-ps-width');
+      el.removeAttribute('data-ps-height');
+      el.removeAttribute('data-ps-resolved-src');
+      el.removeAttribute('data-ps-ignore');
+      el.removeAttribute('data-ps-canvas-id');
     }
   };
+
+  return { cleanup, canvasMap };
 }
 
 /**
@@ -107,10 +212,13 @@ export function preprocessSmartpageDom(container: HTMLElement): void {
   // 3. Normalize Headings
   normalizeHeadings(container);
 
-  // 4. Normalize Bold elements
+  // 4. Normalize Quotes
+  normalizeQuotes(container);
+
+  // 5. Normalize Bold elements
   normalizeBoldElements(container);
 
-  // 5. Normalize sub-items and lists
+  // 6. Normalize sub-items and lists
   normalizeListStructures(container);
 }
 
@@ -131,7 +239,7 @@ function cleanZeroWidthChars(root: HTMLElement): void {
 }
 
 /**
- * Normalize video attachment blocks
+ * Normalize video attachment blocks: preserve preview poster images while cleaning player controls
  */
 function normalizeVideoAttachments(root: HTMLElement): void {
   // Elements marked with data-ps-video
@@ -140,21 +248,29 @@ function normalizeVideoAttachments(root: HTMLElement): void {
     const filename = el.getAttribute('data-ps-video');
     if (!filename) continue;
 
-    const p = document.createElement('p');
-    p.textContent = filename;
-
-    // Check if enclosing wrapper has player duration badges
-    let target: HTMLElement = el as HTMLElement;
-    if (target.parentElement && target.parentElement !== root && target.parentElement.children.length <= 3) {
-      target = target.parentElement;
+    if (el.tagName === 'IMG') {
+      const img = el as HTMLImageElement;
+      if (!img.getAttribute('alt') || img.getAttribute('alt') === filename) {
+        img.setAttribute('alt', filename);
+      }
     }
-    target.replaceWith(p);
+
+    // Clean up duration badges (e.g. "00:28") and control icons in wrapper without removing image
+    const wrapper = el.parentElement;
+    if (wrapper && wrapper !== root && wrapper.children.length <= 5) {
+      const badges = Array.from(wrapper.querySelectorAll('*'));
+      for (const b of badges) {
+        if (b !== el && b.children.length === 0 && /^\s*\d{2}:\d{2}(?::\d{2})?\s*$/.test(b.textContent || '')) {
+          b.remove();
+        }
+      }
+    }
   }
 
-  // Also clean up any lingering player duration badges (e.g. "00:28")
+  // Also clean up any lingering player duration badges (e.g. "00:28") strictly on leaf elements
   const all = Array.from(root.querySelectorAll('*'));
   for (const el of all) {
-    if (/^\s*\d{2}:\d{2}(?::\d{2})?\s*$/.test(el.textContent || '')) {
+    if (el.children.length === 0 && /^\s*\d{2}:\d{2}(?::\d{2})?\s*$/.test(el.textContent || '')) {
       el.remove();
     }
   }
@@ -167,7 +283,12 @@ function normalizeBoldElements(root: HTMLElement): void {
   const boldEls = Array.from(root.querySelectorAll('[data-ps-bold="true"]'));
   for (const el of boldEls) {
     const htmlEl = el as HTMLElement;
-    if (htmlEl.tagName !== 'STRONG' && htmlEl.tagName !== 'B') {
+    if (htmlEl.tagName === 'P' || htmlEl.tagName === 'DIV' || htmlEl.tagName === 'LI') {
+      const strong = document.createElement('strong');
+      strong.innerHTML = htmlEl.innerHTML;
+      htmlEl.innerHTML = '';
+      htmlEl.appendChild(strong);
+    } else if (htmlEl.tagName !== 'STRONG' && htmlEl.tagName !== 'B') {
       const strong = document.createElement('strong');
       strong.innerHTML = htmlEl.innerHTML;
       htmlEl.replaceWith(strong);
@@ -183,16 +304,23 @@ function normalizeBoldElements(root: HTMLElement): void {
     const isBold =
       fw === 'bold' ||
       fw === 'bolder' ||
-      parseInt(fw, 10) >= 600 ||
+      parseInt(fw, 10) >= 550 ||
       className.includes('bold') ||
       className.includes('heavy');
 
     if (isBold && htmlEl.tagName !== 'STRONG' && htmlEl.tagName !== 'B') {
       const text = htmlEl.textContent?.trim();
       if (text && text.length > 0 && text.length < 250) {
-        const strong = document.createElement('strong');
-        strong.innerHTML = htmlEl.innerHTML;
-        htmlEl.replaceWith(strong);
+        if (htmlEl.tagName === 'P' || htmlEl.tagName === 'DIV' || htmlEl.tagName === 'LI') {
+          const strong = document.createElement('strong');
+          strong.innerHTML = htmlEl.innerHTML;
+          htmlEl.innerHTML = '';
+          htmlEl.appendChild(strong);
+        } else {
+          const strong = document.createElement('strong');
+          strong.innerHTML = htmlEl.innerHTML;
+          htmlEl.replaceWith(strong);
+        }
       }
     }
   }
@@ -244,18 +372,40 @@ function normalizeHeadings(root: HTMLElement): void {
 }
 
 /**
+ * Normalize Blockquote elements (<blockquote data-ps-quote="true">)
+ */
+function normalizeQuotes(root: HTMLElement): void {
+  const markedQuotes = Array.from(root.querySelectorAll('[data-ps-quote]'));
+  for (const el of markedQuotes) {
+    if (!el.isConnected && !root.contains(el)) continue;
+    if (el.parentElement?.closest('blockquote')) continue;
+    if (el.tagName !== 'BLOCKQUOTE') {
+      const bq = document.createElement('blockquote');
+      bq.setAttribute('data-ps-quote', 'true');
+      bq.innerHTML = el.innerHTML;
+      el.replaceWith(bq);
+    }
+  }
+}
+
+/**
  * Smart detection of heading level based on text semantics
  */
 export function detectHeadingLevel(text: string): number {
   const t = text.trim();
   if (!t) return 0;
 
-  // Level 2: "一、原创推荐模块", "二、今日头条模块", "三、问题总结", "四、需求描述"
+  // Level 2: "一、原创推荐模块", "二、今日头条模块"
   if (/^[一二三四五六七八九十]+[、.]\s*[^。；;!！?？\n]{1,35}$/.test(t)) {
     return 2;
   }
 
-  // Level 3: Emoji Callouts ("✅ 正常点", "❌ 问题", "✅ 现状", "🎯 期望改动 + ❌ 原有问题", "📌 说明", "⚠️ 注意")
+  // Level 2 PRD Section Keywords ("需求背景", "原型附件", "需求详情", "附：...")
+  if (/^(?:附[录件]?[:：]|需求背景|原型附件|需求详情|业务背景|前台功能清单|验收标准)[:：]?\s*[^。；;!！?？\n]{0,25}$/.test(t)) {
+    return 2;
+  }
+
+  // Level 3: Emoji Callouts ("✅ 正常点", "❌ 问题", "✅ 现状", "🎯 期望改动", "📌 说明", "⚠️ 注意")
   if (
     /^(?:[✅✔️☑️🎯❌⚡️💡📌⚠️🔍🚀🔥🌟⭐️✨❓🚩🏷️])\s*[^。；;!！?？\n]{1,35}$/u.test(t) ||
     /^(?:🎯\s*期望改动|❌\s*原有问题|✅\s*正常点|✅\s*现状)/.test(t)
@@ -279,6 +429,19 @@ export function detectHeadingLevel(text: string): number {
  * are separated into standalone elements or preceding paragraphs.
  */
 function normalizeListStructures(root: HTMLElement): void {
+  // Pass 0: Handle sub-items marked by live DOM indentation
+  const subItems = Array.from(root.querySelectorAll('[data-ps-subitem="true"]'));
+  for (const item of subItems) {
+    if (item.tagName !== 'LI' && !item.closest('li')) {
+      const cleanText = item.textContent?.trim() || '';
+      if (cleanText && !cleanText.startsWith('-') && !cleanText.startsWith('•') && !cleanText.startsWith('*')) {
+        const p = document.createElement('p');
+        p.textContent = `  - ${cleanText}`;
+        item.replaceWith(p);
+      }
+    }
+  }
+
   // Pass 1: Find adjacent blocks where block A is JUST a marker (e.g. "1.", "a.")
   // and block B is the content. Merge them into a single <li>.
   const children = Array.from(root.children);
@@ -338,9 +501,12 @@ export function postprocessMarkdown(markdown: string): string {
 
   // 3. Fix headings:
   // Level 2: "## 一、..."
-  res = res.replace(/\n(?:\*\*\s*)?([一二三四五六七八九十]+[、.][^\n]+?)(?:\s*\*\*)?\n/g, (match, title) => {
-    return `\n\n## ${title.trim()}\n\n`;
-  });
+  res = res.replace(
+    /\n(?:\*\*\s*)?([一二三四五六七八九十]+[、.][^\n。；;!！]{1,35})(?:\s*\*\*)?\n/g,
+    (match, title) => {
+      return `\n\n## ${title.trim()}\n\n`;
+    }
+  );
 
   // Level 3 Callout Headings: "### ✅ 正常点", "### ❌ 问题", etc.
   res = res.replace(
@@ -363,14 +529,21 @@ export function postprocessMarkdown(markdown: string): string {
   // 4. Merge split list numbers: "1.\n\n预览效果弹窗" -> "1. 预览效果弹窗"
   res = res.replace(/\n([0-9]+|[a-zA-Z])\.\s*\n\s*\n([^\n]+)/g, '\n$1. $2');
 
-  // 5. Indent sub-lists ("a.", "b.") under parent ordered lists
-  res = res.replace(/\n([a-zA-Z])\.\s+([^\n]+)/g, '\n    1. $2');
+  // 5. Indent sub-lists ("a.", "b.") under parent ordered lists while preserving lettering
+  res = res.replace(/\n([a-zA-Z])\.\s+([^\n]+)/g, '\n    $1. $2');
 
-  // 6. Indent bullet items under numbered items (e.g. sub-bullets in 4.1 scene)
-  // Match paragraphs following "1. 原创推荐预览..." that describe bullet points
+  // 5.1 Normalize Chinese quote marks: "》 提示" -> "> 提示"
+  res = res.replace(/^[ \t]*》[ \t]*/gm, '> ');
+  res = res.replace(/^>[ \t]+$/gm, '>');
+
+  // 6. Ensure bold on key labels before colon in list items (including within quotes):
+  // "1. 预览逻辑：..." -> "1. **预览逻辑**：..."
   res = res.replace(
-    /(\n\d+\.\s+[^\n]+\n)\n((?:优化预览弹窗宽度|打开预览弹窗|点击标题预览文章|修复投稿详情|打开投稿详情)[^\n]+)/g,
-    '$1    - $2'
+    /^(\s*(?:(?:>\s*)*)(?:\d+\.|[a-zA-Z]\.|-|\*)\s+)(?!\*\*)([^\n：:]{2,25})([：:])(?!\*\*)/gm,
+    (match, prefix, label, colon) => {
+      if (/https?|www|\[|\]|\(|\)/i.test(label)) return match;
+      return `${prefix}**${label.trim()}**${colon}`;
+    }
   );
 
   // 7. Fix bold format with colon: "**预览效果弹窗** ：" -> "**预览效果弹窗**："

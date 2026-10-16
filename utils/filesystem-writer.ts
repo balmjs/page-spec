@@ -117,6 +117,33 @@ export async function removeSavedRequirementsDirectory(): Promise<void> {
   }
 }
 
+import { base64ToUint8Array } from './dom-helpers';
+
+export interface SerializableAsset {
+  filename: string; // e.g. "assets/PRD_Title/prototype-001.png"
+  base64?: string;
+  data?: Uint8Array | number[];
+}
+
+/**
+ * Recursively get or create nested file handle under a root directory handle.
+ */
+async function getNestedFileHandle(
+  rootDirHandle: FileSystemDirectoryHandle,
+  relativePath: string
+): Promise<FileSystemFileHandle> {
+  const parts = relativePath.replace(/^\.?\/+/, '').split('/').filter(Boolean);
+  if (parts.length === 0) {
+    throw new Error(`Invalid asset path: ${relativePath}`);
+  }
+  let currentDir = rootDirHandle;
+  for (let i = 0; i < parts.length - 1; i++) {
+    currentDir = await currentDir.getDirectoryHandle(parts[i]!, { create: true });
+  }
+  const fileName = parts[parts.length - 1]!;
+  return currentDir.getFileHandle(fileName, { create: true });
+}
+
 /**
  * Write extracted PRD Markdown and assets directly to local project directory.
  */
@@ -125,7 +152,7 @@ export async function writePrdBundleToDirectory(
   payload: {
     sanitizedTitle: string;
     markdown: string;
-    assets: Array<{ filename: string; data: Uint8Array | number[] }>;
+    assets: Array<SerializableAsset>;
   }
 ): Promise<{ mdFilename: string; assetsWritten: number }> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
@@ -143,16 +170,22 @@ export async function writePrdBundleToDirectory(
   // 2. Write assets if any exist
   let assetsWritten = 0;
   if (payload.assets && payload.assets.length > 0) {
-    // Create/get assets subfolder
-    const assetsDirHandle = await dirHandle.getDirectoryHandle('assets', { create: true });
-
     for (const asset of payload.assets) {
       try {
-        const pureName = asset.filename.replace(/^assets\//, '');
-        const assetFileHandle = await assetsDirHandle.getFileHandle(pureName, { create: true });
+        const assetFileHandle = await getNestedFileHandle(dirHandle, asset.filename);
         const assetWritable = await (assetFileHandle as any).createWritable();
-        
-        const dataBuffer = asset.data instanceof Uint8Array ? asset.data : new Uint8Array(asset.data);
+
+        let dataBuffer: Uint8Array;
+        if (asset.base64) {
+          dataBuffer = base64ToUint8Array(asset.base64);
+        } else if (asset.data instanceof Uint8Array) {
+          dataBuffer = asset.data;
+        } else if (Array.isArray(asset.data)) {
+          dataBuffer = new Uint8Array(asset.data);
+        } else {
+          throw new Error('Asset has no valid data or base64 payload');
+        }
+
         await assetWritable.write(dataBuffer);
         await assetWritable.close();
         assetsWritten++;

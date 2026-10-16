@@ -87,6 +87,35 @@ export function createTurndownService(options?: TurndownService.Options): Turndo
     },
   });
 
+  // 2.1 Standard Blockquote Rule (converting <blockquote> or [data-ps-quote] to GFM blockquote)
+  service.addRule('standardBlockquote', {
+    filter: (node) => {
+      const el = node as HTMLElement;
+      if (!el) return false;
+      const className = (el.className || '').toString().toLowerCase();
+      if (
+        className.includes('callout') ||
+        className.includes('confluence-information-macro') ||
+        className.includes('alert') ||
+        className.includes('info-box') ||
+        className.includes('tip-box') ||
+        className.includes('warning-box')
+      ) {
+        return false;
+      }
+      return el.tagName === 'BLOCKQUOTE' || el.hasAttribute('data-ps-quote');
+    },
+    replacement: (content) => {
+      const trimmed = content.trim();
+      if (!trimmed) return '';
+      const cleanContent = trimmed
+        .split('\n')
+        .map((line) => (line.trim() ? `> ${line}` : '>'))
+        .join('\n');
+      return `\n\n${cleanContent}\n\n`;
+    },
+  });
+
   // 3. Code Blocks with Language Detection
   service.addRule('enhancedCodeBlock', {
     filter: (node) => {
