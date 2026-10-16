@@ -37,8 +37,13 @@ export function evaluateCurrentFrameContent(): FrameContentScore {
 
   // 0. Directly identify Tencent Docs / WeChat Docs
   if (isTencentDoc(url)) {
+    const hasDocEditor = Boolean(
+      document.querySelector('#pages, .blankpage-editor, .smartpage-editor, .dui-editor, #weworkContainer, canvas')
+    );
+    const urlHasDocId = /[?&](?:id|p)=[^&]+/.test(url) || /\/(?:doc|page|sheet|slide)\/[a-zA-Z0-9_-]+/.test(url);
+    const score = (isTopFrame ? 5000 : 3000) + (hasDocEditor ? 4000 : 0) + (urlHasDocId ? 999 : 0);
     return {
-      score: 9999,
+      score,
       wordCount: 1500,
       imageCount: 1,
       headingsCount: 1,

@@ -1,4 +1,14 @@
 import { defineBackground } from 'wxt/utils/define-background';
+import { uint8ArrayToBase64 } from '../utils/dom-helpers';
+
+export interface ScoredFrameItem {
+  frameId: number;
+  score: number;
+  title: string;
+  url: string;
+  isTopFrame?: boolean;
+  platformBadge?: string;
+}
 
 export interface BestFrameResult {
   bestFrameId: number;
@@ -7,6 +17,7 @@ export interface BestFrameResult {
   bestUrl: string;
   platformBadge?: string;
   totalFrames: number;
+  frames: ScoredFrameItem[];
 }
 
 export default defineBackground(() => {
@@ -56,8 +67,10 @@ export default defineBackground(() => {
           const blob = await resp.blob();
           const mime = resp.headers.get('content-type') || blob.type || 'image/png';
           const buffer = await blob.arrayBuffer();
-          const data = Array.from(new Uint8Array(buffer));
-          sendResponse({ ok: true, data, mime });
+          const uint8 = new Uint8Array(buffer);
+          const base64 = uint8ArrayToBase64(uint8);
+          const data = Array.from(uint8);
+          sendResponse({ ok: true, data, base64, mime });
         } catch (err: any) {
           sendResponse({ ok: false, error: err?.message || String(err) });
         }
@@ -70,14 +83,6 @@ export default defineBackground(() => {
       const tabId = message.tabId;
       (async () => {
         try {
-          interface ScoredFrameItem {
-            frameId: number;
-            score: number;
-            title: string;
-            url: string;
-            platformBadge?: string;
-          }
-
           let frames: any[] = [];
           if (browser.webNavigation && browser.webNavigation.getAllFrames) {
             try {
@@ -107,7 +112,8 @@ export default defineBackground(() => {
                   frameId: f.frameId,
                   score: res.score,
                   title: res.title || '',
-                  url: res.url || '',
+                  url: res.url || f.url || '',
+                  isTopFrame: res.isTopFrame ?? f.frameId === 0,
                   platformBadge: res.platformBadge,
                 };
               }
@@ -119,18 +125,15 @@ export default defineBackground(() => {
               score: 0,
               title: '',
               url: f.url || '',
+              isTopFrame: f.frameId === 0,
               platformBadge: undefined,
             };
           });
 
           const results = await Promise.all(scorePromises);
+          results.sort((a, b) => b.score - a.score);
 
-          let best: ScoredFrameItem = results[0] || { frameId: 0, score: 0, title: '', url: '' };
-          for (const item of results) {
-            if (item.score > best.score) {
-              best = item;
-            }
-          }
+          const best = results[0] || { frameId: 0, score: 0, title: '', url: '' };
 
           sendResponse({
             ok: true,
@@ -141,6 +144,7 @@ export default defineBackground(() => {
               bestUrl: best.url,
               platformBadge: best.platformBadge,
               totalFrames: frames.length,
+              frames: results,
             } as BestFrameResult,
           });
         } catch (err: any) {
@@ -153,6 +157,7 @@ export default defineBackground(() => {
               bestTitle: '',
               bestUrl: '',
               totalFrames: 1,
+              frames: [],
             },
           });
         }

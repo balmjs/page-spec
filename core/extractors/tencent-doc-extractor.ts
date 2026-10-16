@@ -1,4 +1,4 @@
-import { sanitizeFilename } from '../../utils/dom-helpers';
+import { sanitizeFilename, asyncPool, getExtensionFromMimeOrUrl, base64ToUint8Array } from '../../utils/dom-helpers';
 import { generateYamlFrontmatter } from '../markdown/turndown-rules';
 import type { BundleAsset } from '../bundler/zip-builder';
 import type { PrdExtractionResult, ExtractedAssetMeta } from './prd-extractor';
@@ -41,6 +41,7 @@ interface ParagraphFormatInfo {
   heading?: number;
   list?: ListFormatMeta;
   bold?: boolean;
+  blockquote?: boolean;
 }
 
 /**
@@ -162,11 +163,20 @@ function parseParagraphFormats(
     } else {
       result.heading = 2;
     }
+  } else if (
+    pPr.outlineLvl != null ||
+    pr.outlineLvl != null
+  ) {
+    const rawLvl = pPr.outlineLvl?.val ?? pPr.outlineLvl ?? pr.outlineLvl?.val ?? pr.outlineLvl;
+    const lvl = typeof rawLvl === 'number' ? rawLvl : parseInt(String(rawLvl), 10);
+    if (!isNaN(lvl)) {
+      result.heading = Math.max(1, Math.min(6, lvl + 1));
+    }
   }
 
-  // 1.3 Font size fallback for headings
+  // 1.3 Font size fallback for headings (only if not an explicit list item)
   const run = pr.run || pr.rPr || pPr.rPr;
-  if (run?.sz && !result.heading) {
+  if (run?.sz && !result.heading && !numPr && !isExplicitBullet && !isExplicitOrdered) {
     const rawSz = run.sz.val ?? run.sz;
     const sz = typeof rawSz === 'number' ? rawSz : parseInt(String(rawSz), 10) || 0;
     let pt = sz;
@@ -179,6 +189,25 @@ function parseParagraphFormats(
     else if (pt >= 13) result.heading = 4;
   }
 
+  // 1.4 Blockquote Detection
+  const pBdr = pPr.pBdr || pr.pBdr;
+  const hasLeftBdr = Boolean(pBdr?.left?.val && pBdr.left.val !== 'none' && pBdr.left.val !== 'nil');
+  const hasRightBdr = Boolean(pBdr?.right?.val && pBdr.right.val !== 'none' && pBdr.right.val !== 'nil');
+  const hasTopBdr = Boolean(pBdr?.top?.val && pBdr.top.val !== 'none' && pBdr.top.val !== 'nil');
+  const hasBottomBdr = Boolean(pBdr?.bottom?.val && pBdr.bottom.val !== 'none' && pBdr.bottom.val !== 'nil');
+
+  const isBlockQuote = Boolean(
+    pPr.blockQuote === true ||
+    pr.blockQuote === true ||
+    pPr.blockquote === true ||
+    pr.blockquote === true ||
+    pStyle.includes('quote') ||
+    (hasLeftBdr && !hasRightBdr && !hasTopBdr && !hasBottomBdr)
+  );
+  if (isBlockQuote) {
+    result.blockquote = true;
+  }
+
   // 2. List Detection
   const hasListPr = Boolean(
     numPr ||
@@ -188,8 +217,7 @@ function parseParagraphFormats(
     pr.list ||
     pStyle.includes('list') ||
     pStyle.includes('bullet') ||
-    pStyle.includes('number') ||
-    indLeft >= 720
+    pStyle.includes('number')
   );
 
   if (hasListPr && !result.heading) {
@@ -242,16 +270,16 @@ function detectSectionHeading(lineText: string): number {
   if (!t || t.length > 50) return 0;
 
   // Major Level 2 Headings (一、需求背景, 二、功能设计)
-  if (/^[一二三四五六七八九十]+[、.]\s*\S+/.test(t)) {
+  if (/^[一二三四五六七八九十]+[、.]\s*[^。；;!！?？\n]{1,35}$/.test(t)) {
     return 2;
   }
 
   // Major Level 2 Prefix ("附：...", "附录：...")
-  if (/^附[录件]?[:：]\s*\S+/.test(t)) {
+  if (/^附[录件]?[:：]\s*[^。；;!！?？\n]{1,35}$/.test(t)) {
     return 2;
   }
 
-  // Level 2 Headings ("1. 需求背景", "2、原型附件", "3. 需求详情")
+  // Level 2 Numbered Section Headings ("1. 需求背景", "2、原型附件", "3. 需求详情")
   if (/^[1-9]\d?[、.]\s*[^。；;!！?？\n]{1,25}$/.test(t)) {
     if (
       /(?:需求|原型|业务|功能|逻辑|说明|背景|概述|详情|附件|架构|接口|清单|数据|流程|权限|规则|附录|版本|目标|场景|设计|规范|交互)/.test(
@@ -262,9 +290,18 @@ function detectSectionHeading(lineText: string): number {
     }
   }
 
+  // Level 2 PRD Standard Section Keywords without numbers
+  if (
+    /^(?:概述|背景和目标|需求背景|需求场景|产品架构|需求范围|视觉设计要求|前台功能清单|新增业务清单|验收标准|使用权限|使用路径|页面组织|主要功能|边界情况|通用交互与弹窗规则|数据展示与缓存规则|指标口径和具体需求|用户注册功能|培训账号生成方案总览|简单易用的业务数据库|团队沟通[，,]高效协作|实时协作[，,]数据轻松整理|各种信息[，,]一键收集|帮助与反馈)[:：]?\s*$/.test(
+      t
+    )
+  ) {
+    return 2;
+  }
+
   // Level 3 Headings ("(1) 交互逻辑", "1.1 功能说明", "4.1、预览场景", "（一）设计规范")
   if (
-    /^(?:[（(][1-9一二三四五六七八九十]+[)）]|[1-9]\.[1-9]\d?[.、])\s*[^。；;!！?？\n]{1,25}$/.test(
+    /^(?:[（(][1-9一二三四五六七八九十]+[)）]|[1-9]\.[1-9]\d?[.、])\s*[^。；;!！?？\n]{1,35}$/.test(
       t
     )
   ) {
@@ -299,15 +336,29 @@ function detectContextualList(
   const t = lineText.trim();
   if (!t) return null;
 
-  // Sibling bullet items:
-  // "完全选中：复选框为对钩", "未选中：复选框为空", "部分选中：复选框为横杠或填充状态"
-  if (/^(?:完全选中|未选中|部分选中|部分勾选|全部勾选|默认选中|完全勾选)[:：]/.test(t)) {
-    return {
-      isList: true,
-      isOrdered: false,
-      level: 0,
-      itemContent: t,
-    };
+  // Never treat lines ending with colon (introductory lines) as list items
+  if (/[:：]\s*$/.test(t)) return null;
+
+  // Exclude common PRD section/paragraph labels that use colons
+  if (
+    /^(?:背景|目标|交互|设计稿|筛选交互|筛选项交互|指标|说明|注意|报错|弹窗规则|规则|路径|权限|需求|情况|原因|尺寸|操作|提示语|填写项|输入框|自上而下|自左至右)[:：]/.test(
+      t
+    )
+  ) {
+    return null;
+  }
+
+  // Generic short key-value bullet items (e.g. "完全选中：...", "状态：已完成", "优先级：高")
+  const match = t.match(/^([^。；;!！?？\n\s]{2,8})[:：]\s*(\S.*)$/);
+  if (match && !/^(?:http|https|note|tip|warning|notice)/i.test(match[1]!)) {
+    if (match[2]!.length <= 80 && !match[2]!.includes('\n')) {
+      return {
+        isList: true,
+        isOrdered: false,
+        level: 0,
+        itemContent: t,
+      };
+    }
   }
 
   return null;
@@ -318,7 +369,8 @@ function detectContextualList(
  * via its internal opendoc API and mutations AST into standard Markdown & local assets.
  */
 export async function extractTencentDocBundle(
-  onProgress?: (current: number, total: number, message: string) => void
+  onProgress?: (current: number, total: number, message: string) => void,
+  options?: { includeDebugAst?: boolean }
 ): Promise<PrdExtractionResult> {
   onProgress?.(5, 100, '正在识别腾讯文档标识与鉴权参数...');
 
@@ -420,6 +472,7 @@ export async function extractTencentDocBundle(
       strike?: boolean;
       code?: boolean;
       list?: ListFormatMeta;
+      blockquote?: boolean;
     }
   > = {};
   function findLineIndexByCharPos(pos: number): number {
@@ -431,7 +484,13 @@ export async function extractTencentDocBundle(
     return -1;
   }
 
-  const imageMap: Record<number, ImageItem> = {};
+  interface CollectedDocImage {
+    pos: number;
+    img: ImageItem;
+    order: number;
+  }
+  const collectedImages: CollectedDocImage[] = [];
+  let imageOrderSeq = 0;
 
   for (const m of allMutations) {
     if (!m) continue;
@@ -444,28 +503,31 @@ export async function extractTencentDocBundle(
 
     if (ei <= bi && !m.drawing && !pr?.drawing) continue;
 
-    // True paragraph mutations (mp, p, par, or contains paragraph-level properties)
-    const hasParagraphProps = Boolean(
-      pr.paragraph || pr.p || pr.pPr || pr.numPr || pr.listPr || pr.bullet || pr.list || pr.pStyle || pr.outlineLvl
-    );
-    const isParagraphMutation = m.ty === 'mp' || m.ty === 'p' || hasParagraphProps;
+    // True paragraph mutations (mp, p, or contains paragraph-level properties)
+    const isParagraphMutation = m.ty === 'mp' || m.ty === 'p' || m.mt === 'paragraph';
     const parsedPara = parseParagraphFormats(pr, numberingDefs, nestedNumIds);
 
     // Save to paragraphFormatMap and charFormatMap
     if (isParagraphMutation) {
-      const lineIdx = findLineIndexByCharPos(bi);
-      if (lineIdx !== -1) {
-        paragraphFormatMap[lineIdx] = {
-          ...paragraphFormatMap[lineIdx],
-          ...parsedPara,
-        };
-        for (let c = lines[lineIdx]!.startPos; c <= lines[lineIdx]!.endPos; c++) {
-          if (!charFormatMap[c]) charFormatMap[c] = {};
-          if (parsedPara.heading) charFormatMap[c]!.heading = parsedPara.heading;
-          if (parsedPara.list) charFormatMap[c]!.list = parsedPara.list;
+      const startLine = findLineIndexByCharPos(bi);
+      const endLine = ei > bi ? findLineIndexByCharPos(ei - 1) : startLine;
+      if (startLine !== -1) {
+        const pEnd = endLine !== -1 ? Math.max(startLine, endLine) : startLine;
+        for (let p = startLine; p <= pEnd; p++) {
+          paragraphFormatMap[p] = {
+            ...paragraphFormatMap[p],
+            ...parsedPara,
+          };
+          for (let c = lines[p]!.startPos; c <= lines[p]!.endPos; c++) {
+            if (!charFormatMap[c]) charFormatMap[c] = {};
+            if (parsedPara.heading) charFormatMap[c]!.heading = parsedPara.heading;
+            if (parsedPara.list) charFormatMap[c]!.list = parsedPara.list;
+            if (parsedPara.blockquote) charFormatMap[c]!.blockquote = parsedPara.blockquote;
+          }
         }
       } else if (bi < lines.length) {
-        for (let p = bi; p < Math.min(lines.length, Math.max(bi + 1, ei)); p++) {
+        const pEnd = Math.min(lines.length - 1, Math.max(bi, ei - 1));
+        for (let p = bi; p <= pEnd; p++) {
           paragraphFormatMap[p] = {
             ...paragraphFormatMap[p],
             ...parsedPara,
@@ -474,7 +536,7 @@ export async function extractTencentDocBundle(
       }
     }
 
-    // Text Run Formats (bold, italic, code, etc. always indexed by character offset)
+    // Text Run Formats (bold, italic, code, etc. always indexed by character offset in rawText)
     const run = pr?.run || pr?.rPr || (m.ty === 'mr' ? pr : null);
     if (run) {
       for (let i = bi; i < ei; i++) {
@@ -503,8 +565,15 @@ export async function extractTencentDocBundle(
             const width = wMatch ? parseInt(wMatch[1]!, 10) : null;
             const height = hMatch ? parseInt(hMatch[1]!, 10) : null;
             const descr = pic.nvPicPr?.cNvPr?.descr || '';
-            const charPos = isParagraphMutation && bi < lines.length && lines[bi] ? lines[bi]!.startPos : bi;
-            imageMap[charPos] = { url, width, height, descr };
+            let charPos = bi;
+            if (isParagraphMutation && bi < lines.length && lines[bi]) {
+              charPos = lines[bi]!.startPos;
+            }
+            collectedImages.push({
+              pos: charPos,
+              img: { url, width, height, descr },
+              order: imageOrderSeq++,
+            });
           }
         }
       } catch {
@@ -513,21 +582,21 @@ export async function extractTencentDocBundle(
     }
   }
 
-  // Concurrently download all images and rewrite to relative paths
-  const imageEntries = Object.entries(imageMap)
-    .map(([pos, img]) => [parseInt(pos, 10), img] as [number, ImageItem])
-    .sort((a, b) => a[0] - b[0]);
+  // Stable sort by character position in rawText, then insertion order
+  const imageEntries = collectedImages
+    .slice()
+    .sort((a, b) => a.pos - b.pos || a.order - b.order)
+    .map((item, idx) => ({ ...item, idx }));
 
   const totalImages = imageEntries.length;
   onProgress?.(45, 100, `发现 ${totalImages} 张原型图片，正在并发下载并本地化...`);
 
   const assets: BundleAsset[] = [];
   const assetMetadata: ExtractedAssetMeta[] = [];
-  const localImageMap: Record<number, string> = {};
-  let assetCounter = 0;
+  const localImageMap: Record<number, string> = {}; // keyed by image order
 
-  for (let idx = 0; idx < imageEntries.length; idx++) {
-    const [pos, img] = imageEntries[idx]!;
+  await asyncPool(5, imageEntries, async (entry) => {
+    const { img, idx, order } = entry;
     try {
       let buffer: ArrayBuffer | null = null;
       let mime = 'image/png';
@@ -551,9 +620,15 @@ export async function extractTencentDocBundle(
             type: 'FETCH_IMAGE_DATA',
             url: img.url,
           });
-          if (bgRes && bgRes.ok && Array.isArray(bgRes.data)) {
+          if (bgRes && bgRes.ok) {
             mime = bgRes.mime || 'image/png';
-            buffer = new Uint8Array(bgRes.data).buffer;
+            if (bgRes.base64) {
+              buffer = base64ToUint8Array(bgRes.base64).buffer as ArrayBuffer;
+            } else if (Array.isArray(bgRes.data)) {
+              buffer = new Uint8Array(bgRes.data).buffer as ArrayBuffer;
+            } else {
+              throw directErr;
+            }
           } else {
             throw directErr;
           }
@@ -564,10 +639,9 @@ export async function extractTencentDocBundle(
 
       if (!buffer) throw new Error('未能获取有效图片二进制数据');
 
-      const ext = mime.includes('jpeg') || mime.includes('jpg') ? 'jpg' : mime.includes('svg') ? 'svg' : 'png';
-
-      assetCounter++;
-      const filename = `assets/prototype-${String(assetCounter).padStart(3, '0')}.${ext}`;
+      const ext = getExtensionFromMimeOrUrl(mime, img.url);
+      const assetNum = idx + 1;
+      const filename = `assets/${cleanTitle}/prototype-${String(assetNum).padStart(3, '0')}.${ext}`;
       const localPath = `./${filename}`;
 
       assets.push({
@@ -580,19 +654,19 @@ export async function extractTencentDocBundle(
         originalUrl: img.url,
         width: img.width || undefined,
         height: img.height || undefined,
-        alt: img.descr || `Prototype ${assetCounter}`,
+        alt: img.descr || `Prototype ${assetNum}`,
       });
 
-      localImageMap[pos] = localPath;
+      localImageMap[order] = localPath;
     } catch (err: any) {
       warnings.push(`图片抓取失败 [${img.url}]: ${err?.message || err}`);
-      localImageMap[pos] = img.url; // fallback to remote URL
+      localImageMap[order] = img.url; // fallback to remote URL
+    } finally {
+      const currentDone = idx + 1;
+      const pct = 45 + Math.floor((currentDone / Math.max(1, totalImages)) * 35);
+      onProgress?.(pct, 100, `资源抓取进度: ${currentDone}/${totalImages}...`);
     }
-
-    const currentDone = idx + 1;
-    const pct = 45 + Math.floor((currentDone / Math.max(1, totalImages)) * 35);
-    onProgress?.(pct, 100, `资源抓取进度: ${currentDone}/${totalImages}...`);
-  }
+  });
 
   onProgress?.(80, 100, '正在将正文结构深度重构为 GFM Markdown...');
 
@@ -684,12 +758,16 @@ export async function extractTencentDocBundle(
       result = result.replace(/(https?:\/\/[^\s\)\],]+)/g, '[$1]($1)');
     }
 
+    // 6. Clean WeChat Work Cold Start / template button markup (e.g. WxWORK_COLD_START_BUTTON {...}使用)
+    result = result.replace(/WxWORK_COLD_START_BUTTON\s*\{[^}]*\}\s*(\S+)?/g, (_match, label) => {
+      return label ? `\`[${label}]\`` : '';
+    });
+
     return result;
   }
 
   function renderInlineLine(text: string, lineStartPos: number): string {
     if (!text) return '';
-    if (text.includes('HYPERLINK') || text.includes('\x13')) return processLinks(text);
 
     let result = '';
     let buffer = '';
@@ -725,6 +803,7 @@ export async function extractTencentDocBundle(
       result += seg;
     }
 
+    result = result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
     return processLinks(result);
   }
 
@@ -785,8 +864,8 @@ export async function extractTencentDocBundle(
     inCodeBlock = false;
   }
 
-  function appendImage(pos: number, img: ImageItem) {
-    const localSrc = localImageMap[pos] || img.url;
+  function appendImage(order: number, img: ImageItem) {
+    const localSrc = localImageMap[order] || img.url;
     const altText = (img.descr || '原型图').replace(/[\\`*_[\]{}()#+\-.!|]/g, '');
     appendBlock(`\n![${altText}](${localSrc})\n\n`);
   }
@@ -822,6 +901,16 @@ export async function extractTencentDocBundle(
   let imageIndex = 0;
   let skippedLeadingTitle = false;
 
+  function checkIsBlockQuote(idx: number): boolean {
+    if (idx < 0 || idx >= lines.length) return false;
+    if (paragraphFormatMap[idx]?.blockquote) return true;
+    const l = lines[idx]!.raw.trim();
+    if (/^[>》]/.test(l)) return true;
+    const start = lines[idx]!.startPos;
+    if (charFormatMap[start]?.blockquote) return true;
+    return false;
+  }
+
   for (let i = 0; i < lines.length; i++) {
     const lineInfo = lines[i]!;
     const raw = lineInfo.raw;
@@ -829,34 +918,36 @@ export async function extractTencentDocBundle(
     const lineEndPos = lineInfo.endPos;
     const paraFmt = paragraphFormatMap[i];
 
-    // 1. Insert any pending images before this line
-    while (imageIndex < imageEntries.length) {
-      const [pos, img] = imageEntries[imageIndex]!;
-      if (pos < lineStartPos) {
-        imageIndex++;
-        continue;
-      }
-      if (pos >= lineEndPos) break;
-
-      if (inTable) {
-        const localSrc = localImageMap[pos] || img.url;
-        const altText = (img.descr || '原型图').replace(/[\\`*_[\]{}()#+\-.!|]/g, '');
-        const imgMd = `![${altText}](${localSrc})`;
-        if (currentRowCells.length > 0) {
-          const lastIdx = currentRowCells.length - 1;
-          const prev = currentRowCells[lastIdx]!.trim();
-          currentRowCells[lastIdx] = prev ? `${prev}<br>${imgMd}` : imgMd;
-        } else {
-          currentRowCells.push(imgMd);
+    function attachImagesUpTo(maxPos: number) {
+      while (imageIndex < imageEntries.length) {
+        const entry = imageEntries[imageIndex]!;
+        if (entry.pos < lineStartPos) {
+          imageIndex++;
+          continue;
         }
-      } else {
-        if (inCodeBlock) flushCodeBlock();
-        appendImage(pos, img);
+        if (entry.pos > maxPos) break;
+
+        const localSrc = localImageMap[entry.order] || entry.img.url;
+        const altText = (entry.img.descr || '原型图').replace(/[\\`*_[\]{}()#+\-.!|]/g, '');
+        const imgMd = `![${altText}](${localSrc})`;
+
+        if (inTable) {
+          if (currentRowCells.length > 0) {
+            const lastIdx = currentRowCells.length - 1;
+            const prev = currentRowCells[lastIdx]!.trim();
+            currentRowCells[lastIdx] = prev ? `${prev}<br>${imgMd}` : imgMd;
+          } else {
+            currentRowCells.push(imgMd);
+          }
+        } else {
+          if (inCodeBlock) flushCodeBlock();
+          appendImage(entry.order, entry.img);
+        }
+        imageIndex++;
       }
-      imageIndex++;
     }
 
-    // 2. Table Parsing: Check for Boundary, Header, New Row, or New Cell
+    // 1. Table Boundary Check
     const hasTableExit = raw.includes('\x1b');
     const cleanRawForTableCheck = raw.replace(/[\x00-\x1f]/g, '').trim();
     const isTableBoundary =
@@ -868,6 +959,7 @@ export async function extractTencentDocBundle(
       flushTable();
     }
 
+    // 2. Table Structural Elements (Header, Row, Cell Separator)
     const isTableHeader = !isTableBoundary && raw.startsWith(TABLE_HEADER_START);
     const isTableRowStart =
       !isTableBoundary &&
@@ -880,7 +972,10 @@ export async function extractTencentDocBundle(
       if (isTableHeader) {
         if (inTable) flushTable();
         inTable = true;
-        currentRowCells = [processLinks(cleanCellText(raw.replace(TABLE_HEADER_START, '')))];
+        const cellText = cleanCellText(raw.replace(TABLE_HEADER_START, ''));
+        const cellOffset = lineStartPos + Math.max(0, raw.indexOf(cellText));
+        currentRowCells = [renderInlineLine(cellText, cellOffset)];
+        attachImagesUpTo(lineEndPos);
         continue;
       }
 
@@ -890,17 +985,26 @@ export async function extractTencentDocBundle(
           tableRows.push(currentRowCells);
         }
         const cellContent = raw.replace(TABLE_CELL_SEP + TABLE_ROW_START, '').replace(TABLE_ROW_START, '');
-        currentRowCells = [processLinks(cleanCellText(cellContent))];
+        const cellText = cleanCellText(cellContent);
+        const cellOffset = lineStartPos + Math.max(0, raw.indexOf(cellText));
+        currentRowCells = [renderInlineLine(cellText, cellOffset)];
+        attachImagesUpTo(lineEndPos);
         continue;
       }
 
       if (isTableCellSep) {
         if (!inTable) inTable = true;
         const cellContent = raw.replace(TABLE_CELL_SEP, '');
-        currentRowCells.push(processLinks(cleanCellText(cellContent)));
+        const cellText = cleanCellText(cellContent);
+        const cellOffset = lineStartPos + Math.max(0, raw.indexOf(cellText));
+        currentRowCells.push(renderInlineLine(cellText, cellOffset));
+        attachImagesUpTo(lineEndPos);
         continue;
       }
     }
+
+    // If not a table structural line, attach any pending images before this line
+    attachImagesUpTo(lineStartPos);
 
     // 3. Table Cell Continuation (Multi-line content in a cell)
     if (inTable) {
@@ -908,7 +1012,9 @@ export async function extractTencentDocBundle(
       const isHeading = (paraFmt?.heading && paraFmt.heading > 0) || detectSectionHeading(cleanRaw) > 0;
       if (hasUpcomingTableElements(i + 1) && !isHeading) {
         if (cleanRaw.length > 0) {
-          const processedContent = processLinks(cleanCellText(cleanRaw));
+          const cellText = cleanCellText(cleanRaw);
+          const cellOffset = lineStartPos + Math.max(0, raw.indexOf(cellText));
+          const processedContent = renderInlineLine(cellText, cellOffset);
           if (currentRowCells.length === 0) {
             currentRowCells.push(processedContent);
           } else {
@@ -916,6 +1022,7 @@ export async function extractTencentDocBundle(
             currentRowCells[lastIdx] = `${currentRowCells[lastIdx]}<br>${processedContent}`;
           }
         }
+        attachImagesUpTo(lineEndPos);
         continue;
       } else {
         flushTable();
@@ -950,6 +1057,7 @@ export async function extractTencentDocBundle(
         code !== 13 &&
         code !== 6 &&
         code !== 7 &&
+        code !== 8 &&
         code !== 19 &&
         code !== 26 &&
         code !== 28 &&
@@ -965,12 +1073,48 @@ export async function extractTencentDocBundle(
       }
     }
 
-    const lineContent = raw.substring(k).trim();
+    let lineContent = raw.substring(k).trim();
+
+    // Blockquote Detection and Normalization
+    const rawQuoteMatch = lineContent.match(/^([>》]+)\s*(.*)$/);
+    let quotePrefix = '> ';
+    if (rawQuoteMatch) {
+      const markers = rawQuoteMatch[1]!.replace(/》/g, '>');
+      quotePrefix = markers.split('').join(' ') + ' ';
+      lineContent = rawQuoteMatch[2]!.trim();
+    }
+    const isBlockQuote = Boolean(
+      paraFmt?.blockquote ||
+      rawQuoteMatch ||
+      charFormatMap[lineStartPos]?.blockquote
+    );
+
+    // Look ahead to check if next non-empty line is also a blockquote
+    let nextIsBlockQuote = false;
+    for (let n = i + 1; n < lines.length; n++) {
+      const nextRaw = lines[n]!.raw.trim();
+      if (nextRaw.length === 0) continue;
+      if (
+        lines[n]!.raw.startsWith(TABLE_HEADER_START) ||
+        lines[n]!.raw.startsWith(TABLE_CELL_SEP) ||
+        lines[n]!.raw.startsWith(TABLE_ROW_START) ||
+        paragraphFormatMap[n]?.heading ||
+        detectSectionHeading(nextRaw) > 0
+      ) {
+        nextIsBlockQuote = false;
+        break;
+      }
+      nextIsBlockQuote = checkIsBlockQuote(n);
+      break;
+    }
 
     // 5. Empty Line handling
     if (lineContent.length === 0 || raw.trim() === HEADING_MARK) {
       if (inCodeBlock) codeLines.push('');
-      else if (!prevWasEmpty) {
+      else if (isBlockQuote && nextIsBlockQuote) {
+        appendBlock('>\n');
+        prevWasEmpty = true;
+      } else if (!prevWasEmpty) {
         appendBlock('\n');
         prevWasEmpty = true;
       }
@@ -984,8 +1128,7 @@ export async function extractTencentDocBundle(
           nextRaw.match(BULLET_REGEX) ||
           nextRaw.match(ORDERED_REGEX) ||
           paragraphFormatMap[n]?.list?.isList ||
-          detectContextualList(nextRaw, currentSectionHeading) ||
-          (nextRaw.charCodeAt(0) < 32 && nextRaw.charCodeAt(0) !== 8)
+          detectContextualList(nextRaw, currentSectionHeading)
         ) {
           nextIsList = true;
         }
@@ -1038,11 +1181,17 @@ export async function extractTencentDocBundle(
     }
 
     if (maxHeading > 0) {
+      const headingBody = lineContent.replace(/^#+\s*/, '').trim();
+      // Prevent emitting empty headings or lines consisting only of control characters
+      if (!headingBody || /^[\x00-\x1f\s]+$/.test(headingBody)) {
+        continue;
+      }
       lastListLevel = -1;
-      currentSectionHeading = lineContent;
-      const headingBody = lineContent.replace(/^#+\s*/, '');
-      const headingText = renderInlineLine(headingBody, lineStartPos + (raw.length - lineContent.length));
-      appendBlock('\n' + '#'.repeat(maxHeading) + ' ' + (headingText || headingBody) + '\n\n');
+      currentSectionHeading = headingBody;
+      const headingOffset = lineStartPos + Math.max(0, raw.indexOf(headingBody));
+      const headingText = renderInlineLine(headingBody, headingOffset);
+      const hPrefix = isBlockQuote ? `${quotePrefix}` : '';
+      appendBlock('\n' + hPrefix + '#'.repeat(maxHeading) + ' ' + (headingText || headingBody) + '\n\n');
       continue;
     }
 
@@ -1081,9 +1230,7 @@ export async function extractTencentDocBundle(
       explicitBulletMatch ||
       explicitNumberMatch ||
       listMeta?.isList ||
-      ctxList?.isList ||
-      hasControlMarker ||
-      (leadingTabs > 0 && lineContent.length > 0)
+      ctxList?.isList
     );
 
     if (isList) {
@@ -1156,14 +1303,20 @@ export async function extractTencentDocBundle(
       lastListLevel = level;
       lastListWasOrdered = isOrdered;
 
-      const bodyOffset = lineStartPos + Math.max(0, raw.length - itemBody.length);
+      const itemOffset = raw.indexOf(itemBody);
+      const bodyOffset = lineStartPos + (itemOffset >= 0 ? itemOffset : 0);
       const renderedBody = renderInlineLine(itemBody, bodyOffset);
 
-      if (level >= 1) {
-        // Sublist item: two trailing spaces for hard break + double newline for block separation
-        appendBlock(`${listPrefix}${renderedBody || itemBody}  \n\n`);
+      if (isBlockQuote) {
+        const trailing = nextIsBlockQuote ? (level >= 1 ? '  \n' : '\n') : '\n\n';
+        appendBlock(`${quotePrefix}${listPrefix}${renderedBody || itemBody}${trailing}`);
       } else {
-        appendBlock(`${listPrefix}${renderedBody || itemBody}\n\n`);
+        if (level >= 1) {
+          // Sublist item: two trailing spaces for hard break + double newline for block separation
+          appendBlock(`${listPrefix}${renderedBody || itemBody}  \n\n`);
+        } else {
+          appendBlock(`${listPrefix}${renderedBody || itemBody}\n\n`);
+        }
       }
       continue;
     }
@@ -1172,9 +1325,15 @@ export async function extractTencentDocBundle(
     lastListLevel = -1;
 
     // 9. Normal Paragraph
-    const paraOffset = lineStartPos + Math.max(0, raw.length - lineContent.length);
+    const contentOffset = raw.indexOf(lineContent);
+    const paraOffset = lineStartPos + (contentOffset >= 0 ? contentOffset : 0);
     const renderedPara = renderInlineLine(lineContent, paraOffset);
-    appendBlock((renderedPara || lineContent) + '\n\n');
+    if (isBlockQuote) {
+      const trailing = nextIsBlockQuote ? `\n${quotePrefix.trimEnd()}\n` : '\n\n';
+      appendBlock(`${quotePrefix}${renderedPara || lineContent}${trailing}`);
+    } else {
+      appendBlock((renderedPara || lineContent) + '\n\n');
+    }
   }
 
   // Final flushes
@@ -1183,39 +1342,41 @@ export async function extractTencentDocBundle(
 
   // Append any images at end of document
   while (imageIndex < imageEntries.length) {
-    const [pos, img] = imageEntries[imageIndex]!;
-    appendImage(pos, img);
+    const entry = imageEntries[imageIndex]!;
+    appendImage(entry.order, entry.img);
     imageIndex++;
   }
 
-  // Include full AST debug dump in assets for transparency and future diagnostics
-  try {
-    const debugDump = {
-      title,
-      commandsCount: textData?.commands?.length,
-      allMutationsCount: allMutations.length,
-      allMutationTypes: Array.from(new Set(allMutations.map((m: any) => m.ty || 'none'))),
-      numberingDefs,
-      sampleMutationsWithProperties: allMutations
-        .filter((m: any) => {
-          const s = JSON.stringify(m).toLowerCase();
-          return (
-            s.includes('list') ||
-            s.includes('num') ||
-            s.includes('bullet') ||
-            s.includes('lvl') ||
-            s.includes('ind')
-          );
-        })
-        .slice(0, 30),
-      rawLinesSample: lines.slice(0, 40).map((l) => l.raw),
-    };
-    assets.push({
-      filename: 'assets/debug_ast.json',
-      data: new TextEncoder().encode(JSON.stringify(debugDump, null, 2)),
-    });
-  } catch {
-    // ignore debug write error
+  // Include full AST debug dump in assets only if requested
+  if (options?.includeDebugAst) {
+    try {
+      const debugDump = {
+        title,
+        commandsCount: textData?.commands?.length,
+        allMutationsCount: allMutations.length,
+        allMutationTypes: Array.from(new Set(allMutations.map((m: any) => m.ty || 'none'))),
+        numberingDefs,
+        sampleMutationsWithProperties: allMutations
+          .filter((m: any) => {
+            const s = JSON.stringify(m).toLowerCase();
+            return (
+              s.includes('list') ||
+              s.includes('num') ||
+              s.includes('bullet') ||
+              s.includes('lvl') ||
+              s.includes('ind')
+            );
+          })
+          .slice(0, 30),
+        rawLinesSample: lines.slice(0, 40).map((l) => l.raw),
+      };
+      assets.push({
+        filename: `assets/${cleanTitle}/debug_ast.json`,
+        data: new TextEncoder().encode(JSON.stringify(debugDump, null, 2)),
+      });
+    } catch {
+      // ignore debug write error
+    }
   }
 
   // Prepend YAML Frontmatter
@@ -1225,11 +1386,12 @@ export async function extractTencentDocBundle(
     extracted_at: new Date().toISOString(),
     platform: 'Tencent Docs (腾讯文档)',
     author: creator,
-    asset_count: assets.length - 1, // exclude debug_ast.json from asset count
+    asset_count: assetMetadata.length,
     ...(warnings.length > 0 ? { warnings } : {}),
   });
 
-  const fullMarkdown = `${frontmatter}\n# ${title}\n\n${markdownParts.join('').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+  let fullMarkdown = `${frontmatter}\n# ${title}\n\n${markdownParts.join('').replace(/\n{3,}/g, '\n\n').trim()}\n`;
+  fullMarkdown = fullMarkdown.replace(/>\s*\n\n(?!\s*>)/g, '\n\n');
 
   onProgress?.(100, 100, '腾讯文档提取与结构化解析完成！');
 

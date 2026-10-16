@@ -21,12 +21,31 @@ export function sanitizeFilename(name: string, fallback = 'document'): string {
  */
 export function resolveImageSource(img: HTMLImageElement): string | null {
   const candidates = [
+    img.getAttribute('data-ps-resolved-src'),
+    img.currentSrc,
     img.getAttribute('data-src'),
     img.getAttribute('data-original'),
+    img.getAttribute('data-original-src'),
     img.getAttribute('data-actualsrc'),
+    img.getAttribute('data-origin-src'),
     img.getAttribute('data-lazy-src'),
     img.getAttribute('data-url'),
-    img.currentSrc,
+    img.getAttribute('data-zoom-src'),
+    img.getAttribute('data-raw-src'),
+    img.getAttribute('data-full-src'),
+    img.getAttribute('data-preview-src'),
+    img.getAttribute('data-preview-url'),
+    img.getAttribute('data-file-url'),
+    img.getAttribute('data-download-url'),
+    img.getAttribute('data-img-url'),
+    img.getAttribute('data-img-src'),
+    img.getAttribute('data-source'),
+    img.getAttribute('data-cos-src'),
+    img.getAttribute('data-cdn-src'),
+    img.getAttribute('data-crop-src'),
+    img.getAttribute('data-large'),
+    img.getAttribute('data-image'),
+    img.getAttribute('data-origin'),
     img.getAttribute('src'),
   ];
 
@@ -44,12 +63,24 @@ export function resolveImageSource(img: HTMLImageElement): string | null {
   }
 
   for (const candidate of candidates) {
-    if (candidate && candidate.trim() && !candidate.startsWith('data:image/svg+xml;base64,PHN2Zy') && candidate !== 'about:blank') {
-      try {
-        return new URL(candidate.trim(), window.location.href).href;
-      } catch {
-        return candidate.trim();
+    if (!candidate || !candidate.trim()) continue;
+    const c = candidate.trim();
+    if (c === 'about:blank' || c === 'javascript:void(0)') continue;
+    // Filter out 1x1 transparent placeholders (GIF, PNG, or empty SVG data URIs)
+    if (c.startsWith('data:')) {
+      if (
+        c.includes('R0lGODlhAQABA') ||
+        c.includes('iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB') ||
+        c.startsWith('data:image/svg+xml;base64,PHN2Zy') ||
+        c.length < 150
+      ) {
+        continue;
       }
+    }
+    try {
+      return new URL(c, window.location.href).href;
+    } catch {
+      return c;
     }
   }
 
@@ -57,12 +88,33 @@ export function resolveImageSource(img: HTMLImageElement): string | null {
 }
 
 /**
+ * Extract background image URL from element inline styles.
+ */
+export function extractBackgroundImageUrl(el: Element): string | null {
+  const style = el.getAttribute('style') || '';
+  const match = style.match(/background(?:-image)?\s*:[^;]*url\(['"]?(https?:\/\/[^'")]+|data:image\/[^'")]+)['"]?\)/i);
+  if (match && match[1]) {
+    const url = match[1].trim();
+    if (!url.startsWith('data:image/svg+xml') && url.length > 20) {
+      return url;
+    }
+  }
+  return null;
+}
+
+/**
  * Check if an image or visual element is an essential prototype/content graphic rather than a tiny icon/avatar.
  */
 export function isSignificantVisualElement(el: Element, minSize = 32): boolean {
+  if (el.getAttribute('data-ps-ignore') === 'true') {
+    return false;
+  }
+  const cachedW = parseFloat(el.getAttribute('data-ps-width') || '0');
+  const cachedH = parseFloat(el.getAttribute('data-ps-height') || '0');
+
   if (el instanceof HTMLImageElement) {
-    const width = el.naturalWidth || el.width || el.getBoundingClientRect().width;
-    const height = el.naturalHeight || el.height || el.getBoundingClientRect().height;
+    const width = cachedW || el.naturalWidth || el.width || el.getBoundingClientRect().width;
+    const height = cachedH || el.naturalHeight || el.height || el.getBoundingClientRect().height;
 
     // Filter out if known dimensions are below threshold
     if ((width > 0 && width < minSize) || (height > 0 && height < minSize)) {
@@ -85,17 +137,95 @@ export function isSignificantVisualElement(el: Element, minSize = 32): boolean {
 
   if (el instanceof HTMLCanvasElement) {
     const rect = el.getBoundingClientRect();
-    return (el.width >= minSize || rect.width >= minSize) && (el.height >= minSize || rect.height >= minSize);
+    const w = cachedW || el.width || rect.width;
+    const h = cachedH || el.height || rect.height;
+    return w >= minSize && h >= minSize;
   }
 
   if (el instanceof SVGSVGElement) {
     const rect = el.getBoundingClientRect();
-    const w = el.width?.baseVal?.value || rect.width;
-    const h = el.height?.baseVal?.value || rect.height;
+    const w = cachedW || el.width?.baseVal?.value || rect.width;
+    const h = cachedH || el.height?.baseVal?.value || rect.height;
     return w >= minSize && h >= minSize;
   }
 
   return true;
+}
+
+/**
+ * Run a pool of async tasks with concurrency limit.
+ */
+export async function asyncPool<T, R>(
+  poolLimit: number,
+  array: T[],
+  iteratorFn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const ret: Promise<R>[] = [];
+  const executing: Set<Promise<any>> = new Set();
+
+  for (let i = 0; i < array.length; i++) {
+    const item = array[i]!;
+    const p = Promise.resolve().then(() => iteratorFn(item, i));
+    ret.push(p);
+
+    let clean: Promise<any>;
+    clean = p.finally(() => executing.delete(clean));
+    executing.add(clean);
+
+    if (executing.size >= poolLimit) {
+      await Promise.race(executing);
+    }
+  }
+  return Promise.all(ret);
+}
+
+/**
+ * Deduce file extension from Content-Type header or URL.
+ */
+export function getExtensionFromMimeOrUrl(mime: string | null | undefined, url: string): string {
+  if (mime) {
+    const m = mime.toLowerCase();
+    if (m.includes('png')) return 'png';
+    if (m.includes('jpeg') || m.includes('jpg')) return 'jpg';
+    if (m.includes('webp')) return 'webp';
+    if (m.includes('svg')) return 'svg';
+    if (m.includes('gif')) return 'gif';
+    if (m.includes('avif')) return 'avif';
+    if (m.includes('bmp')) return 'bmp';
+  }
+  const cleanUrl = url.split('?')[0]?.split('#')[0] || '';
+  const match = cleanUrl.match(/\.(png|jpe?g|webp|svg|gif|bmp|avif)$/i);
+  if (match && match[1]) {
+    const ext = match[1].toLowerCase();
+    return ext === 'jpeg' ? 'jpg' : ext;
+  }
+  return 'png';
+}
+
+/**
+ * Convert Uint8Array to Base64 string safely without call stack overflow.
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Convert Base64 string back to Uint8Array.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 /**
@@ -181,6 +311,8 @@ export function cleanNoiseElements(root: Element, isDocPlatform = false): void {
       elements.forEach((el) => {
         // Protect headings, tables, or code blocks that might have accidental class overlap
         if (!['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'CODE', 'TABLE'].includes(el.tagName)) {
+          // If the element contains headings, table, or code blocks, do not remove
+          if (el.querySelector('h1, h2, h3, h4, h5, h6, table, pre, code')) return;
           // If the element contains substantial text (> 50 chars), keep it
           if ((el.textContent?.trim().length || 0) > 50) return;
           el.remove();

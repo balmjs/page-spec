@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
 import {
   FolderArchive,
   Code2,
@@ -15,6 +15,8 @@ import {
   Sparkles,
   ArrowRight,
   ShieldCheck,
+  Copy,
+  Check,
 } from 'lucide-vue-next';
 import {
   isFileSystemAccessSupported,
@@ -45,6 +47,7 @@ const extractionError = ref('');
 
 // Frame Detection Info
 const bestFrame = ref<BestFrameResult | null>(null);
+const selectedFrameId = ref<number>(0);
 const isDetectingFrames = ref(false);
 
 // Local Requirements Directory Handle
@@ -52,9 +55,15 @@ const savedDirHandle = ref<FileSystemDirectoryHandle | null>(null);
 const dirName = ref<string>('');
 const isFsSupported = ref(isFileSystemAccessSupported());
 
+// Copy status
+const copiedPrompt = ref(false);
+const copiedMarkdown = ref(false);
+
 // PRD Extraction Result
 const lastPrdResult = ref<{
   title: string;
+  sanitizedTitle: string;
+  markdown: string;
   totalAssets: number;
   warnings: string[];
   markdownPreview: string;
@@ -65,6 +74,8 @@ const lastPrdResult = ref<{
 // API Extraction Result
 const lastApiResult = ref<{
   title: string;
+  sanitizedTitle: string;
+  markdown: string;
   endpointsCount: number;
   format: string;
   markdownPreview: string;
@@ -80,7 +91,41 @@ const activeHost = computed(() => {
   }
 });
 
-// Initialize active tab and inspect frame hierarchy
+async function refreshActiveTabContext() {
+  let activeTabId: number | undefined;
+  try {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    if (tabs[0]?.id) {
+      activeTabId = tabs[0].id;
+      pageTitle.value = tabs[0].title || '当前网页';
+      pageUrl.value = tabs[0].url || '';
+    }
+  } catch (e) {
+    console.error('Failed to get active tab:', e);
+  }
+
+  if (activeTabId) {
+    detectFrames(activeTabId);
+  }
+}
+
+function handleTabActivated() {
+  refreshActiveTabContext();
+}
+
+function handleTabUpdated(_tabId: number, changeInfo: any, tab: any) {
+  if (changeInfo.status === 'complete' && tab?.active) {
+    refreshActiveTabContext();
+  }
+}
+
+function handleRuntimeMessage(msg: any) {
+  if (msg?.type === 'EXTRACTION_PROGRESS') {
+    progressPercent.value = msg.current;
+    progressMessage.value = msg.message;
+  }
+}
+
 onMounted(async () => {
   // 0. Load saved engine mode
   try {
@@ -104,30 +149,30 @@ onMounted(async () => {
   }
 
   // 2. Query active tab
-  let activeTabId: number | undefined;
+  await refreshActiveTabContext();
+
+  // 3. Listen to tab and progress messages
+  browser.runtime.onMessage.addListener(handleRuntimeMessage);
+  if (browser.tabs?.onActivated) {
+    browser.tabs.onActivated.addListener(handleTabActivated);
+  }
+  if (browser.tabs?.onUpdated) {
+    browser.tabs.onUpdated.addListener(handleTabUpdated);
+  }
+});
+
+onUnmounted(() => {
   try {
-    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0]?.id) {
-      activeTabId = tabs[0].id;
-      pageTitle.value = tabs[0].title || '当前网页';
-      pageUrl.value = tabs[0].url || '';
+    browser.runtime.onMessage.removeListener(handleRuntimeMessage);
+    if (browser.tabs?.onActivated) {
+      browser.tabs.onActivated.removeListener(handleTabActivated);
     }
-  } catch (e) {
-    console.error('Failed to get active tab:', e);
-  }
-
-  // 3. Detect best content frame (piercing iframes)
-  if (activeTabId) {
-    detectFrames(activeTabId);
-  }
-
-  // 4. Listen to progress messages
-  browser.runtime.onMessage.addListener((msg) => {
-    if (msg.type === 'EXTRACTION_PROGRESS') {
-      progressPercent.value = msg.current;
-      progressMessage.value = msg.message;
+    if (browser.tabs?.onUpdated) {
+      browser.tabs.onUpdated.removeListener(handleTabUpdated);
     }
-  });
+  } catch {
+    // ignore unregister error
+  }
 });
 
 watch(engineMode, (val) => {
@@ -143,6 +188,7 @@ async function detectFrames(tabId: number) {
     });
     if (res && res.ok && res.data) {
       bestFrame.value = res.data;
+      selectedFrameId.value = res.data.bestFrameId ?? 0;
       if (res.data.bestTitle) {
         pageTitle.value = res.data.bestTitle;
       }
@@ -154,7 +200,25 @@ async function detectFrames(tabId: number) {
   }
 }
 
-// Directory Selection
+// Directory Selection & Permission Preflight
+async function ensureTargetDirectoryReady(): Promise<FileSystemDirectoryHandle> {
+  if (!isFsSupported.value) {
+    throw new Error('当前浏览器不支持目录直接写入，请使用下载方式');
+  }
+  let targetDir = savedDirHandle.value;
+  if (!targetDir) {
+    targetDir = await pickRequirementsDirectory();
+    savedDirHandle.value = targetDir;
+    dirName.value = targetDir.name;
+  } else {
+    const hasPerm = await verifyDirectoryPermission(targetDir);
+    if (!hasPerm) {
+      throw new Error('未获得对本地 requirements 目录的读写授权，请重新点击并授权');
+    }
+  }
+  return targetDir;
+}
+
 async function handleSelectDirectory() {
   try {
     extractionError.value = '';
@@ -174,11 +238,40 @@ async function handleClearDirectory() {
   dirName.value = '';
 }
 
+// Copy Helpers
+async function copyToClipboard(text: string, type: 'prompt' | 'markdown') {
+  try {
+    await navigator.clipboard.writeText(text);
+    if (type === 'prompt') {
+      copiedPrompt.value = true;
+      setTimeout(() => (copiedPrompt.value = false), 2000);
+    } else {
+      copiedMarkdown.value = true;
+      setTimeout(() => (copiedMarkdown.value = false), 2000);
+    }
+  } catch (err) {
+    console.error('Clipboard copy failed:', err);
+  }
+}
+
 // Mode 1: PRD Extraction
 async function handleExtractPrd(mode: 'directory' | 'zip') {
   if (isExtracting.value) return;
-  isExtracting.value = true;
   extractionError.value = '';
+
+  let targetDir: FileSystemDirectoryHandle | null = null;
+  if (mode === 'directory') {
+    try {
+      targetDir = await ensureTargetDirectoryReady();
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        extractionError.value = err?.message || String(err);
+      }
+      return;
+    }
+  }
+
+  isExtracting.value = true;
   progressPercent.value = 5;
   progressMessage.value = '准备提取当前页面内容与原型图...';
 
@@ -187,25 +280,7 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
     const tabId = tabs[0]?.id;
     if (!tabId) throw new Error('无法连接到当前激活的网页标签');
 
-    // If directory mode selected but not bound yet, prompt picker first
-    let targetDir = savedDirHandle.value;
-    if (mode === 'directory') {
-      if (!isFsSupported.value) {
-        throw new Error('当前浏览器不支持目录直接写入，请使用下载压缩包方式');
-      }
-      if (!targetDir) {
-        targetDir = await pickRequirementsDirectory();
-        savedDirHandle.value = targetDir;
-        dirName.value = targetDir.name;
-      } else {
-        const hasPerm = await verifyDirectoryPermission(targetDir);
-        if (!hasPerm) {
-          throw new Error('未获得对本地 requirements 目录的读写授权');
-        }
-      }
-    }
-
-    const frameId = bestFrame.value?.bestFrameId ?? 0;
+    const frameId = selectedFrameId.value ?? bestFrame.value?.bestFrameId ?? 0;
 
     const res: any = await browser.tabs.sendMessage(
       tabId,
@@ -221,7 +296,6 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
       throw new Error(res?.error || '提取失败，请刷新目标页面后重试');
     }
 
-    // If writing directly to directory
     if (mode === 'directory' && targetDir) {
       progressMessage.value = '正在将 Markdown 与图片写入本地 requirements 目录...';
       progressPercent.value = 95;
@@ -235,6 +309,8 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
 
     lastPrdResult.value = {
       title: res.title,
+      sanitizedTitle: res.sanitizedTitle,
+      markdown: res.markdown,
       totalAssets: res.totalAssets,
       warnings: res.warnings || [],
       markdownPreview: res.markdownPreview,
@@ -253,8 +329,21 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
 // Mode 2: API Extraction
 async function handleExtractApi(mode: 'directory' | 'download') {
   if (isExtracting.value) return;
-  isExtracting.value = true;
   extractionError.value = '';
+
+  let targetDir: FileSystemDirectoryHandle | null = null;
+  if (mode === 'directory') {
+    try {
+      targetDir = await ensureTargetDirectoryReady();
+    } catch (err: any) {
+      if (err.name !== 'AbortError') {
+        extractionError.value = err?.message || String(err);
+      }
+      return;
+    }
+  }
+
+  isExtracting.value = true;
   progressPercent.value = 5;
   progressMessage.value = '准备分析接口文档与 OpenAPI 规范...';
 
@@ -263,19 +352,7 @@ async function handleExtractApi(mode: 'directory' | 'download') {
     const tabId = tabs[0]?.id;
     if (!tabId) throw new Error('无法连接到当前激活的网页标签');
 
-    let targetDir = savedDirHandle.value;
-    if (mode === 'directory') {
-      if (!isFsSupported.value) {
-        throw new Error('当前浏览器不支持目录直接写入，请使用下载 Markdown 方式');
-      }
-      if (!targetDir) {
-        targetDir = await pickRequirementsDirectory();
-        savedDirHandle.value = targetDir;
-        dirName.value = targetDir.name;
-      }
-    }
-
-    const frameId = bestFrame.value?.bestFrameId ?? 0;
+    const frameId = selectedFrameId.value ?? bestFrame.value?.bestFrameId ?? 0;
 
     const res: any = await browser.tabs.sendMessage(
       tabId,
@@ -302,6 +379,8 @@ async function handleExtractApi(mode: 'directory' | 'download') {
 
     lastApiResult.value = {
       title: res.title,
+      sanitizedTitle: res.sanitizedTitle,
+      markdown: res.markdown,
       endpointsCount: res.endpointsCount,
       format: res.format,
       markdownPreview: res.markdownPreview,
@@ -348,7 +427,7 @@ function openSidePanel() {
           v-if="bestFrame"
           class="flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium border"
           :class="bestFrame.totalFrames > 1 ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700'"
-          :title="`共检测到 ${bestFrame.totalFrames} 个框架，已自动锁定正文 frame #${bestFrame.bestFrameId}`"
+          :title="`共检测到 ${bestFrame.totalFrames} 个框架，当前选中 frame #${selectedFrameId}`"
         >
           <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
           <span>{{ bestFrame.totalFrames > 1 ? `已穿透 ${bestFrame.totalFrames} 框架` : '单框架' }}</span>
@@ -441,13 +520,27 @@ function openSidePanel() {
       <!-- Tab 1: PRD Extractor -->
       <section v-if="currentTab === 'prd'" class="space-y-4">
         <!-- Target Frame Meta Card -->
-        <div v-if="bestFrame" class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-xs space-y-1.5">
+        <div v-if="bestFrame" class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-xs space-y-2">
           <div class="flex items-center justify-between">
             <span class="text-slate-400 font-medium">目标正文框架:</span>
             <span class="font-mono text-slate-700 dark:text-slate-300 font-bold">
-              {{ bestFrame.bestFrameId === 0 ? 'Top Window (主窗口)' : `iframe #${bestFrame.bestFrameId}` }}
+              {{ selectedFrameId === 0 ? 'Top Window (主窗口)' : `iframe #${selectedFrameId}` }}
             </span>
           </div>
+
+          <!-- Manual Frame Selector if multiple frames exist -->
+          <div v-if="bestFrame.frames && bestFrame.frames.length > 1" class="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-700/60">
+            <span class="text-slate-400">切换目标 Frame:</span>
+            <select
+              v-model="selectedFrameId"
+              class="bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded px-1.5 py-0.5 text-[11px] font-mono text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer max-w-[210px] truncate"
+            >
+              <option v-for="f in bestFrame.frames" :key="f.frameId" :value="f.frameId">
+                #{{ f.frameId }} {{ f.isTopFrame ? '(主窗口)' : '' }} {{ f.title ? `- ${f.title.slice(0, 15)}` : '' }} ({{ f.score }}分)
+              </option>
+            </select>
+          </div>
+
           <div v-if="bestFrame.platformBadge" class="flex items-center justify-between">
             <span class="text-slate-400">检测平台:</span>
             <span class="px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 font-medium">
@@ -467,7 +560,7 @@ function openSidePanel() {
               <span>智能 PRD 本地化提取</span>
             </h2>
             <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              保留当前会话鉴权态。自动穿透嵌套菜单 iframe，锁定正文框架，并发抓取高分辨率原型图并重写为本地相对路径。
+              保留当前会话鉴权态。自动穿透嵌套菜单 iframe，锁定正文框架，并发抓取高分辨率原型图并隔离重写为本地相对路径。
             </p>
           </div>
 
@@ -489,7 +582,6 @@ function openSidePanel() {
 
           <!-- Action Buttons -->
           <div class="space-y-2 pt-1">
-            <!-- Primary Button: Write to Directory -->
             <button
               @click="handleExtractPrd('directory')"
               :disabled="isExtracting"
@@ -499,7 +591,6 @@ function openSidePanel() {
               <span>{{ isExtracting ? '正在处理中...' : (dirName ? `一键写入本地 requirements (${dirName})` : '写入本地 requirements 目录') }}</span>
             </button>
 
-            <!-- Secondary Button: Download ZIP -->
             <button
               @click="handleExtractPrd('zip')"
               :disabled="isExtracting"
@@ -512,11 +603,12 @@ function openSidePanel() {
         </div>
 
         <!-- PRD Result Card -->
-        <div v-if="lastPrdResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm">
-          <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold mb-2">
+        <div v-if="lastPrdResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm space-y-3">
+          <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
             <CheckCircle2 class="w-4 h-4" />
             <span>{{ lastPrdResult.savedToDirectory ? `成功写入本地目录 [${lastPrdResult.directoryName}]` : '打包完成！已触发浏览器下载' }}</span>
           </div>
+
           <div class="text-xs text-slate-600 dark:text-slate-300 space-y-1">
             <div class="flex justify-between">
               <span class="text-slate-400">文档标题:</span>
@@ -527,17 +619,79 @@ function openSidePanel() {
               <span class="font-bold text-indigo-600 dark:text-indigo-400">{{ lastPrdResult.totalAssets }} 张</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-slate-400">落盘格式:</span>
-              <span class="font-mono text-indigo-600 dark:text-indigo-400">
-                {{ lastPrdResult.savedToDirectory ? '<title>.md + assets/' : '<title>-prd.zip' }}
+              <span class="text-slate-400">资源隔离路径:</span>
+              <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px]">
+                assets/{{ lastPrdResult.sanitizedTitle }}/
               </span>
             </div>
           </div>
+
+          <!-- Warnings Box if any -->
+          <div v-if="lastPrdResult.warnings && lastPrdResult.warnings.length > 0" class="p-2 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-400 text-[11px] space-y-1">
+            <div class="font-semibold flex items-center space-x-1">
+              <AlertCircle class="w-3.5 h-3.5 flex-shrink-0" />
+              <span>部分资源降级提示 ({{ lastPrdResult.warnings.length }} 个):</span>
+            </div>
+            <ul class="list-disc list-inside max-h-24 overflow-y-auto space-y-0.5">
+              <li v-for="(w, idx) in lastPrdResult.warnings" :key="idx" class="truncate">{{ w }}</li>
+            </ul>
+          </div>
+
+          <!-- Quick Action Buttons: Copy Prompt & Markdown -->
+          <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
+            <button
+              @click="copyToClipboard(`@requirements/${lastPrdResult.sanitizedTitle}.md 请根据该需求文档与对应 assets/${lastPrdResult.sanitizedTitle}/ 原型图，实现此功能模块`, 'prompt')"
+              class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition"
+            >
+              <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
+              <Copy v-else class="w-3.5 h-3.5" />
+              <span>{{ copiedPrompt ? '提示词已复制' : '复制 AI 提示词' }}</span>
+            </button>
+
+            <button
+              @click="copyToClipboard(lastPrdResult.markdown, 'markdown')"
+              class="py-1.5 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition"
+            >
+              <Check v-if="copiedMarkdown" class="w-3.5 h-3.5 text-emerald-600" />
+              <Copy v-else class="w-3.5 h-3.5" />
+              <span>{{ copiedMarkdown ? 'Markdown已复制' : '复制全文' }}</span>
+            </button>
+          </div>
+
+          <!-- Markdown Preview Collapsible -->
+          <details class="text-xs pt-1">
+            <summary class="cursor-pointer text-indigo-600 dark:text-indigo-400 font-medium select-none hover:underline">
+              查看 Markdown 预览
+            </summary>
+            <pre class="mt-1 p-2 rounded bg-slate-100 dark:bg-slate-900 font-mono text-[10px] max-h-40 overflow-y-auto whitespace-pre-wrap text-slate-700 dark:text-slate-300">{{ lastPrdResult.markdownPreview }}</pre>
+          </details>
         </div>
       </section>
 
       <!-- Tab 2: API Spec Extractor -->
       <section v-if="currentTab === 'api'" class="space-y-4">
+        <!-- Target Frame Meta Card -->
+        <div v-if="bestFrame" class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-xs space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-slate-400 font-medium">目标接口框架:</span>
+            <span class="font-mono text-slate-700 dark:text-slate-300 font-bold">
+              {{ selectedFrameId === 0 ? 'Top Window (主窗口)' : `iframe #${selectedFrameId}` }}
+            </span>
+          </div>
+
+          <div v-if="bestFrame.frames && bestFrame.frames.length > 1" class="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-700/60">
+            <span class="text-slate-400">切换目标 Frame:</span>
+            <select
+              v-model="selectedFrameId"
+              class="bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded px-1.5 py-0.5 text-[11px] font-mono text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer max-w-[210px] truncate"
+            >
+              <option v-for="f in bestFrame.frames" :key="f.frameId" :value="f.frameId">
+                #{{ f.frameId }} {{ f.isTopFrame ? '(主窗口)' : '' }} {{ f.title ? `- ${f.title.slice(0, 15)}` : '' }} ({{ f.score }}分)
+              </option>
+            </select>
+          </div>
+        </div>
+
         <div class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
           <div>
             <h2 class="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider mb-1 flex items-center space-x-1.5">
@@ -545,7 +699,7 @@ function openSidePanel() {
               <span>结构化 API 规范提取</span>
             </h2>
             <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              优先嗅探 Swagger / OpenAPI 底层 JSON 规范直出高保真 Markdown；同时支持 Knife4j、Apifox、Redoc 深度展开与打平。
+              优先嗅探 Swagger / OpenAPI 底层 JSON 规范直出高保真 Markdown（自动解引用 $ref 并打平属性表格）；兼容 Knife4j、Apifox、Redoc。
             </p>
           </div>
 
@@ -571,11 +725,12 @@ function openSidePanel() {
         </div>
 
         <!-- API Result Card -->
-        <div v-if="lastApiResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm">
-          <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold mb-2">
+        <div v-if="lastApiResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm space-y-3">
+          <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
             <CheckCircle2 class="w-4 h-4" />
             <span>{{ lastApiResult.savedToDirectory ? `成功写入本地目录 [${lastApiResult.directoryName}]` : '提取完成！已生成 API Markdown' }}</span>
           </div>
+
           <div class="text-xs text-slate-600 dark:text-slate-300 space-y-1">
             <div class="flex justify-between">
               <span class="text-slate-400">检测接口数:</span>
@@ -584,10 +739,38 @@ function openSidePanel() {
             <div class="flex justify-between">
               <span class="text-slate-400">解析引擎:</span>
               <span class="font-medium px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400">
-                {{ lastApiResult.format === 'openapi-spec' ? 'OpenAPI 规格引擎' : 'DOM 深度解析' }}
+                {{ lastApiResult.format === 'openapi-spec' ? 'OpenAPI 规格引擎 ($ref 已解引用)' : 'DOM 深度解析' }}
               </span>
             </div>
           </div>
+
+          <!-- Quick Action Buttons -->
+          <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
+            <button
+              @click="copyToClipboard(`@requirements/${lastApiResult.sanitizedTitle}-api.md 请根据该接口定义实现相关 API 请求与数据类型`, 'prompt')"
+              class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition"
+            >
+              <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
+              <Copy v-else class="w-3.5 h-3.5" />
+              <span>{{ copiedPrompt ? '提示词已复制' : '复制 AI 提示词' }}</span>
+            </button>
+
+            <button
+              @click="copyToClipboard(lastApiResult.markdown, 'markdown')"
+              class="py-1.5 px-2.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition"
+            >
+              <Check v-if="copiedMarkdown" class="w-3.5 h-3.5 text-emerald-600" />
+              <Copy v-else class="w-3.5 h-3.5" />
+              <span>{{ copiedMarkdown ? 'Markdown已复制' : '复制全文' }}</span>
+            </button>
+          </div>
+
+          <details class="text-xs pt-1">
+            <summary class="cursor-pointer text-indigo-600 dark:text-indigo-400 font-medium select-none hover:underline">
+              查看 Markdown 预览
+            </summary>
+            <pre class="mt-1 p-2 rounded bg-slate-100 dark:bg-slate-900 font-mono text-[10px] max-h-40 overflow-y-auto whitespace-pre-wrap text-slate-700 dark:text-slate-300">{{ lastApiResult.markdownPreview }}</pre>
+          </details>
         </div>
       </section>
 
@@ -645,7 +828,7 @@ function openSidePanel() {
           <p class="leading-relaxed">
             落盘至 <code>requirements/</code> 目录后，直接在 Cursor 或 Claude Code 中使用：
           </p>
-          <pre class="p-2 rounded bg-white dark:bg-slate-900 font-mono text-[10px] text-slate-800 dark:text-slate-200 overflow-x-auto">@requirements/PRD-xxx.md 请根据需求文档与对应 assets/ 原型图实现此功能模块</pre>
+          <pre class="p-2 rounded bg-white dark:bg-slate-900 font-mono text-[10px] text-slate-800 dark:text-slate-200 overflow-x-auto">@requirements/PRD-xxx.md 请根据需求文档与对应 assets/PRD-xxx/ 原型图实现此功能模块</pre>
         </div>
       </section>
     </main>
