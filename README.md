@@ -1,89 +1,125 @@
-# PageSpec 📑
+<p align="center">
+  <img src="public/icons/icon.svg" width="80" height="80" alt="PageSpec Logo" />
+</p>
 
-> **高效前端需求采集浏览器插件 (Chrome MV3 & Firefox MV2/MV3)**  
-> 专为前端开发者打造：一键穿透各类复杂/嵌套 iframe 需求页面（Axure、飞书、语雀、Confluence 等），自动提取正文转为结构化 Markdown，并发下载并重写高分辨率原型图，直接落地到本地工程的 `requirements/` 目录，无需任何 AI 交互或 Token 消耗，即刻赋能本地 Cursor / Claude Code 等 AI Agent Coding。
+<h1 align="center">PageSpec</h1>
 
----
+<p align="center">
+  <b>High-efficiency web PRD & API specification extractor browser extension (Chrome MV3 & Firefox MV2/MV3)</b><br />
+  <sub>English | <a href="README.zh-CN.md">简体中文</a></sub>
+</p>
 
-## ✨ 核心亮点
-
-### 1. 🛡️ 嵌套 / 跨域 iframe 智能穿透与靶向提取
-- **多层 iframe 自动穿透**：通过 Chrome MV3 `all_frames: true` 深入所有子框架，打破跨域隔离限制。
-- **正文密度打分机制 (Content Density Scoring)**：智能区分左侧菜单/目录 iframe 与正文内容 iframe，自动锁定核心需求文档区，剔除侧栏、顶部杂音与高密度超链接菜单。
-- **带鉴权的原型图抓取**：在正文 frame 真实会话下运行，自动携带登录态 Cookie 并发下载图片与 Canvas，转换为本地相对路径引用（`./assets/prototype-001.png`）。
-
-### 2. ⚡ 本地工程 `requirements/` 目录一键直写
-- **File System Access API 支持**：支持在插件中一键绑定当前本地前端项目的 `requirements` 文件夹（权限自动持久化存储）。
-- **零解压、零拖拽**：提取时直接将 `<title>.md` 和 `assets/` 原型图落盘至本地项目磁盘，打开 VSCode / Cursor 即可直接 `@requirements/PRD-xxx.md` 开展开发。
-- **ZIP 压缩包无缝降级**：非 Chromium 浏览器或未授权目录时，一键自动打包为 `.zip` 触发浏览器标准下载。
-
-### 3. 🔌 结构化 API 文档提取
-- **OpenAPI / Swagger 规格直出**：底层嗅探页面原生 OpenAPI 规格 JSON 并格式化为 Markdown。
-- **DOM 表格深度打平**：兼容 Knife4j、Apifox、Redoc，自动展开折叠面板，打平多层参数表格。
+<p align="center">
+  <a href="https://github.com/balmjs/page-spec/releases"><img src="https://img.shields.io/github/v/release/balmjs/page-spec?color=indigo" alt="Release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+  <a href="https://wxt.dev/"><img src="https://img.shields.io/badge/Framework-WXT-orange.svg" alt="WXT" /></a>
+</p>
 
 ---
 
-## 🛠 技术栈
+**PageSpec** is a developer-centric browser extension engineered to penetrate complex, nested, or cross-origin iframe requirement pages (Tencent Docs, WeChat SmartPages, Axure, Feishu/Lark, Yuque, Confluence, Swagger/OpenAPI, etc.). 
 
-- **插件架构**：[WXT](https://wxt.dev/) (Chrome MV3 & Firefox MV2/MV3)
-- **UI 界面**：Vue 3 (Composition API) + TypeScript + Tailwind CSS
-- **DOM & Markdown 解析**：`@mozilla/readability` + `turndown` + `@truto/turndown-plugin-gfm`
-- **文件落盘与压缩**：HTML5 File System Access API + `fflate`
+It extracts authenticated web content into structured **Markdown** bundles and localized high-resolution prototype assets directly into your project's `requirements/` folder—**100% offline with zero AI token consumption**, instantly empowering Agentic Coding in tools like **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
 
 ---
 
-## 🚀 快速上手
+## ✨ Key Features
 
-### 1. 安装依赖与本地开发
+### 1. 🛡️ Nested / Cross-Origin iframe Penetration & Targeted Extraction
+- **Deep Frame Penetration**: Penetrates all sub-frames via Chrome MV3 `all_frames: true` to bypass cross-origin isolation.
+- **Content Density Scoring**: Automatically differentiates navigation/sidebar menus from the core specification body, filtering out menu clutter and anchor density.
+- **Session-Authenticated Prototype Assets**: Runs directly within the authenticated session context, preserving login cookies to download high-res images, recordings, and Canvas elements concurrently, rewriting them to isolated relative paths (`./assets/<spec>/prototype-001.png`).
+- **Tencent Docs AST & SmartPage Engine**: Direct AST and block normalization for Tencent Docs and WeChat SmartPages, preserving headings, blockquotes, lists, and tables without layout destruction.
+
+### 2. ⚡ Direct-to-Disk Workspace Synchronization
+- **File System Access API**: Bind your local project's `requirements/` directory once; permission handles persist automatically across browser restarts.
+- **Zero Unzipping, Zero Drag-and-Drop**: Emits `<title>.md` and its corresponding `assets/` directory straight onto your disk. Open your IDE and immediately prompt `@requirements/PRD-xxx.md`.
+- **ZIP Download Fallback**: Automatically falls back to standard `.zip` downloads on unsupported browsers or when directory write permission is declined.
+
+### 3. 🔌 Structured API Spec Extraction
+- **Raw OpenAPI / Swagger Sniffing**: Sniffs underlying OpenAPI/Swagger JSON specifications to generate high-fidelity Markdown, automatically resolving and dereferencing `$ref` schemas and flattening attribute tables.
+- **Deep DOM Parser**: Seamlessly flattens multi-layer parameter tables and expands accordion panels in Knife4j, Apifox, and Redoc.
+
+### 4. 🌐 Full Internationalization (i18n)
+- **Automatic Locale Detection**: Automatically detects and adapts to your browser or OS preferred language (English or Simplified Chinese).
+- **On-the-Fly Toggle**: Easily switch languages anytime using the `EN / 中` button in the header bar.
+
+---
+
+## 💡 AI Agent Coding Workflow
+
+```
+[ Browser Requirement Page ]
+             │
+      ( Click PageSpec )
+             ▼
+[ Auto-saved to requirements/ ]
+  ├── PRD-UserModule.md
+  └── assets/PRD-UserModule/
+        ├── prototype-001.png
+        └── prototype-002.jpg
+             │
+             ▼
+[ Prompt in Cursor / Claude Code ]
+  "@requirements/PRD-UserModule.md Please implement this feature module
+   based on the specification and assets in assets/PRD-UserModule/"
+```
+
+---
+
+## 📦 Installation & Getting Started
+
+### Ready-to-Use Builds (Releases)
+
+Pre-built extension packages are available on [GitHub Releases](https://github.com/balmjs/page-spec/releases):
+
+#### Chrome / Edge / Brave (Chromium-based Browsers)
+1. Download `page-spec-<version>-chrome.zip` from [Releases](https://github.com/balmjs/page-spec/releases).
+2. Unzip the file into a folder.
+3. Open your browser extensions page (`chrome://extensions/` or `edge://extensions/`).
+4. Enable **"Developer mode"** in the top-right corner.
+5. Click **"Load unpacked"** and select the unzipped directory.
+
+#### Firefox
+1. Download `page-spec-<version>-firefox.zip` from [Releases](https://github.com/balmjs/page-spec/releases).
+2. Unzip the file into a folder.
+3. Open `about:debugging#/runtime/this-firefox`.
+4. Click **"Load Temporary Add-on..."** and select the `manifest.json` file in the unzipped folder.
+
+---
+
+## 🛠 Development & Build
+
+### Requirements
+- [Node.js](https://nodejs.org/) >= 20
+- [pnpm](https://pnpm.io/) >= 9
+
+### Commands
+
 ```bash
+# Install dependencies & prepare types
 pnpm install
 
-# 启动 Chrome 调试
+# Start development in Chrome
 pnpm dev
 
-# 启动 Firefox 调试
+# Start development in Firefox
 pnpm dev:firefox
-```
 
-### 2. 构建生产包
-```bash
-# 构建 Chrome MV3
+# Build production extensions
 pnpm build
+pnpm build:firefox
 
-# 打包发布 ZIP (Chrome / Firefox)
+# Package ZIP bundles for distribution
 pnpm zip
 pnpm zip:firefox
-```
-构建产物输出于 `.output/chrome-mv3`，直接在 Chrome 扩展管理界面 (`chrome://extensions/`) 点击 **“加载已解压的扩展程序”** 即可使用。
 
-### 3. 一键打包并发布至 GitHub Releases
-```bash
-# 交互式选择版本号、构建双浏览器 ZIP 包、更新 Tag 并直传 GitHub Releases
+# Automated release (bumps version, tags, packages, and publishes to GitHub Releases)
 pnpm release
-
-# 快捷指定版本类型
-pnpm release patch   # 小版本升级 (如 1.0.0 -> 1.0.1)
-pnpm release minor   # 次版本升级 (如 1.0.0 -> 1.1.0)
-pnpm release major   # 主版本升级 (如 1.0.0 -> 2.0.0)
-
-# 预演模式（仅打包验证，不创建 Tag、不提交或推送）
-pnpm release --dry-run
 ```
 
 ---
 
-## 💡 AI Agent Coding 推荐工作流
+## 📄 License
 
-1. 在浏览器打开产品经理给出的需求文档或原型链接（如 Axure、飞书、语雀等）；
-2. 点击 PageSpec 插件，选择本地项目的 `requirements` 文件夹（首次绑定后无需重复设置）；
-3. 点击 **“一键写入本地 requirements 目录”**；
-4. 回到 Cursor 或 Claude Code 终端，直接提问：
-   ```text
-   @requirements/PRD-用户模块.md 请根据该需求文档与对应 assets/ 原型图，实现前端业务页面及相关组件
-   ```
-
----
-
-## 📄 授权协议
-
-MIT License &copy; 2026 PageSpec
+[MIT License](LICENSE) &copy; 2026 BalmJS
