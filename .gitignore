@@ -17,3 +17,6 @@ dist
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Internal docs
+docs
