@@ -19,7 +19,7 @@
 
 **PageSpec** 是一款专为前端工程师与全栈开发者打造的高效浏览器插件，能够一键穿透各类复杂、嵌套或跨域 iframe 需求页面（腾讯文档、微信智能/轻文档、Axure、飞书、语雀、Confluence、Swagger/OpenAPI 等）。
 
-在保留当前会话登录鉴权态的前提下，自动提取正文并转化为高保真结构化 **Markdown**，并发下载高清晰度原型图与录屏封面，直接保存到本地项目的 `requirements/` 目录中。**全程 100% 离线运行，零 AI Token 消耗**，即刻赋能 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI Coding Agent。
+在保留当前会话登录鉴权态的前提下，自动提取正文并转化为高保真结构化 **Markdown**，并发下载高清晰度原型图与录屏封面，直接保存到本地项目的 `requirements/` 目录中。**全程 100% 本地离线解析**，专为将复杂需求结构化为高质量上下文而生，即刻赋能 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI Coding Agent。
 
 ---
 
@@ -118,6 +118,6 @@ pnpm release
 
 ---
 
-## 📄 授权协议
-
-[MIT License](LICENSE) &copy; 2026 BalmJS
+## 📄 授权协议与隐私规范
+- [MIT License](LICENSE) &copy; 2026 BalmJS
+- [隐私政策 (Privacy Policy)](PRIVACY.md)

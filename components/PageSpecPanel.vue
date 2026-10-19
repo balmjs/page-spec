@@ -861,7 +861,15 @@ function openSidePanel() {
     <!-- Footer -->
     <footer class="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850 text-[11px] text-slate-400 flex items-center justify-between">
       <span>{{ t('footerTitle') }}</span>
-      <span class="font-mono text-emerald-600 dark:text-emerald-400">{{ t('zeroToken') }}</span>
+      <a
+        href="https://github.com/balmjs/page-spec"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="font-mono text-indigo-600 dark:text-indigo-400 hover:underline flex items-center space-x-1"
+        title="GitHub: balmjs/page-spec"
+      >
+        <span>v1.0.0</span>
+      </a>
     </footer>
   </div>
 </template>
