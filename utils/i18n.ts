@@ -97,7 +97,6 @@ export const messages = {
 
     // Footer
     footerTitle: 'PageSpec • Pure Offline Spec Extraction',
-    zeroToken: 'Zero AI Token',
 
     // Errors
     errFsUnsupported: 'Current browser does not support direct directory writing. Please use ZIP download.',
@@ -198,7 +197,6 @@ export const messages = {
 
     // Footer
     footerTitle: 'PageSpec • 纯离线需求提取',
-    zeroToken: 'Zero AI Token',
 
     // Errors
     errFsUnsupported: '当前浏览器不支持目录直接写入，请使用下载方式',

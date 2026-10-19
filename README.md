@@ -19,7 +19,7 @@
 
 **PageSpec** is a developer-centric browser extension engineered to penetrate complex, nested, or cross-origin iframe requirement pages (Tencent Docs, WeChat SmartPages, Axure, Feishu/Lark, Yuque, Confluence, Swagger/OpenAPI, etc.). 
 
-It extracts authenticated web content into structured **Markdown** bundles and localized high-resolution prototype assets directly into your project's `requirements/` folder—**100% offline with zero AI token consumption**, instantly empowering Agentic Coding in tools like **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
+It extracts authenticated web content into structured **Markdown** bundles and localized high-resolution prototype assets directly into your project's `requirements/` folder—**100% locally and offline**, perfectly structuring requirement contexts to empower Agentic Coding in tools like **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
 
 ---
 
@@ -120,6 +120,6 @@ pnpm release
 
 ---
 
-## 📄 License
-
-[MIT License](LICENSE) &copy; 2026 BalmJS
+## 📄 License & Privacy
+- [MIT License](LICENSE) &copy; 2026 BalmJS
+- [Privacy Policy](PRIVACY.md)
