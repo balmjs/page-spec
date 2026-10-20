@@ -162,6 +162,50 @@ export function createTurndownService(options?: TurndownService.Options): Turndo
     },
   });
 
+  // 5. Form Controls Rule (Input, Select, Textarea, Button for prototypes)
+  service.addRule('formControls', {
+    filter: ['input', 'select', 'textarea', 'button'],
+    replacement: (_content, node) => {
+      const el = node as HTMLElement;
+      if (el.tagName === 'INPUT') {
+        const input = el as HTMLInputElement;
+        const type = (input.type || 'text').toLowerCase();
+        if (type === 'checkbox') {
+          return input.checked ? ' `[x]` ' : ' `[ ]` ';
+        }
+        if (type === 'radio') {
+          return input.checked ? ' `(x)` ' : ' `( )` ';
+        }
+        if (type === 'submit' || type === 'button') {
+          const btnVal = input.value?.trim();
+          return btnVal ? ` \`[${btnVal}]\` ` : '';
+        }
+        if (type === 'hidden') return '';
+        const val = input.value || input.placeholder;
+        return ` \`[输入框: ${val ? val.trim() : '...'}]\` `;
+      }
+      if (el.tagName === 'SELECT') {
+        const select = el as HTMLSelectElement;
+        const selected = select.options[select.selectedIndex]?.text?.trim();
+        const allOpts = Array.from(select.options)
+          .map((o) => o.text.trim())
+          .filter(Boolean);
+        const desc = selected || allOpts.join(' / ') || '请选择';
+        return ` \`[下拉选择: ${desc}]\` `;
+      }
+      if (el.tagName === 'TEXTAREA') {
+        const textarea = el as HTMLTextAreaElement;
+        const val = textarea.value || textarea.placeholder;
+        return ` \`[多行文本: ${val ? val.trim() : '...'}]\` `;
+      }
+      if (el.tagName === 'BUTTON') {
+        const text = el.textContent?.trim();
+        return text ? ` \`[${text}]\` ` : '';
+      }
+      return '';
+    },
+  });
+
   return service;
 }
 

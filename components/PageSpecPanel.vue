@@ -305,25 +305,31 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
 
     if (mode === 'directory' && targetDir) {
       progressMessage.value = t('writingFiles');
-      await writePrdBundleToDirectory(targetDir, res.data.bundle);
+      const rawRes = res.bundle || res.data?.bundle || res;
+      await writePrdBundleToDirectory(targetDir, {
+        sanitizedTitle: rawRes.sanitizedTitle,
+        markdown: rawRes.markdown,
+        assets: rawRes.assets || [],
+      });
       lastPrdResult.value = {
-        title: res.data.bundle.title,
-        sanitizedTitle: res.data.bundle.sanitizedTitle,
-        markdown: res.data.bundle.markdown,
-        totalAssets: res.data.bundle.assets.length,
-        warnings: res.data.bundle.warnings || [],
-        markdownPreview: res.data.bundle.markdown.slice(0, 300) + '...',
+        title: rawRes.title,
+        sanitizedTitle: rawRes.sanitizedTitle,
+        markdown: rawRes.markdown,
+        totalAssets: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
+        warnings: rawRes.warnings || [],
+        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 300) + '...' : ''),
         savedToDirectory: true,
         directoryName: targetDir.name,
       };
     } else {
+      const rawRes = res.bundle || res.data?.bundle || res;
       lastPrdResult.value = {
-        title: res.data.title,
-        sanitizedTitle: res.data.sanitizedTitle,
-        markdown: res.data.markdown,
-        totalAssets: res.data.totalAssets,
-        warnings: res.data.warnings || [],
-        markdownPreview: res.data.markdown.slice(0, 300) + '...',
+        title: rawRes.title,
+        sanitizedTitle: rawRes.sanitizedTitle,
+        markdown: rawRes.markdown,
+        totalAssets: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
+        warnings: rawRes.warnings || [],
+        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 300) + '...' : ''),
         savedToDirectory: false,
       };
     }
@@ -379,25 +385,30 @@ async function handleExtractApi(mode: 'directory' | 'download') {
 
     if (mode === 'directory' && targetDir) {
       progressMessage.value = t('writingFiles');
-      await writeApiSpecToDirectory(targetDir, res.data.spec);
+      const rawRes = res.spec || res.data?.spec || res;
+      await writeApiSpecToDirectory(targetDir, {
+        sanitizedTitle: rawRes.sanitizedTitle,
+        markdown: rawRes.markdown,
+      });
       lastApiResult.value = {
-        title: res.data.spec.title,
-        sanitizedTitle: res.data.spec.sanitizedTitle,
-        markdown: res.data.spec.markdown,
-        endpointsCount: res.data.spec.endpointsCount,
-        format: res.data.spec.format,
-        markdownPreview: res.data.spec.markdown.slice(0, 300) + '...',
+        title: rawRes.title,
+        sanitizedTitle: rawRes.sanitizedTitle,
+        markdown: rawRes.markdown,
+        endpointsCount: rawRes.endpointsCount,
+        format: rawRes.format,
+        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 300) + '...' : ''),
         savedToDirectory: true,
         directoryName: targetDir.name,
       };
     } else {
+      const rawRes = res.spec || res.data?.spec || res;
       lastApiResult.value = {
-        title: res.data.title,
-        sanitizedTitle: res.data.sanitizedTitle,
-        markdown: res.data.markdown,
-        endpointsCount: res.data.endpointsCount,
-        format: res.data.format,
-        markdownPreview: res.data.markdown.slice(0, 300) + '...',
+        title: rawRes.title,
+        sanitizedTitle: rawRes.sanitizedTitle,
+        markdown: rawRes.markdown,
+        endpointsCount: rawRes.endpointsCount,
+        format: rawRes.format,
+        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 300) + '...' : ''),
         savedToDirectory: false,
       };
     }
@@ -561,7 +572,7 @@ function openSidePanel() {
               class="bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded px-1.5 py-0.5 text-[11px] font-mono text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer max-w-[210px] truncate"
             >
               <option v-for="f in bestFrame.frames" :key="f.frameId" :value="f.frameId">
-                #{{ f.frameId }} {{ f.isTopFrame ? `(${t('topWindow')})` : '' }} {{ f.title ? `- ${f.title.slice(0, 15)}` : '' }} ({{ f.score }}{{ t('scoreUnit') }})
+                #{{ f.frameId }} {{ f.isTopFrame ? `(${t('topWindow')})` : '' }} {{ f.platformBadge ? `[${f.platformBadge}] ` : '' }}{{ f.title ? `- ${f.title.slice(0, 18)}` : '' }} ({{ f.score }}{{ t('scoreUnit') }})
               </option>
             </select>
           </div>
@@ -711,7 +722,7 @@ function openSidePanel() {
               class="bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded px-1.5 py-0.5 text-[11px] font-mono text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer max-w-[210px] truncate"
             >
               <option v-for="f in bestFrame.frames" :key="f.frameId" :value="f.frameId">
-                #{{ f.frameId }} {{ f.isTopFrame ? `(${t('topWindow')})` : '' }} {{ f.title ? `- ${f.title.slice(0, 15)}` : '' }} ({{ f.score }}{{ t('scoreUnit') }})
+                #{{ f.frameId }} {{ f.isTopFrame ? `(${t('topWindow')})` : '' }} {{ f.platformBadge ? `[${f.platformBadge}] ` : '' }}{{ f.title ? `- ${f.title.slice(0, 18)}` : '' }} ({{ f.score }}{{ t('scoreUnit') }})
               </option>
             </select>
           </div>

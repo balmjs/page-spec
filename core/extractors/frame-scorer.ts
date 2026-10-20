@@ -15,17 +15,17 @@ export interface FrameContentScore {
 
 const DOCUMENT_CONTAINER_SELECTORS = [
   // Feishu / Lark
-  { selector: '.docx-page, .bear-web-document, .suite-cloud-document, .lark-editor-content', name: 'Feishu/Lark Doc' },
+  { selector: '.docx-page, .bear-web-document, .suite-cloud-document, .lark-editor-content', name: 'Feishu/Lark Doc', bonus: 3000 },
   // Confluence
-  { selector: '#main-content, .wiki-content, [data-testid="page-content"]', name: 'Confluence' },
+  { selector: '#main-content, .wiki-content, [data-testid="page-content"]', name: 'Confluence', bonus: 3000 },
   // Yuque
-  { selector: '.ne-viewer-body, .lake-content, #article-body', name: 'Yuque' },
+  { selector: '.ne-viewer-body, .lake-content, #article-body', name: 'Yuque', bonus: 3000 },
   // Notion
-  { selector: '.notion-page-content, main.notion-frame', name: 'Notion' },
-  // Axure RP HTML
-  { selector: '#base, #mainFrame, .ax_default', name: 'Axure' },
+  { selector: '.notion-page-content, main.notion-frame', name: 'Notion', bonus: 3000 },
+  // Axure RP HTML exports
+  { selector: '#base, #mainFrame, .ax_default, [class*="ax_default"]', name: 'Axure', bonus: 3500 },
   // Generic standard containers
-  { selector: 'article, [role="main"], main, #main, #content, .post-content, .markdown-body', name: 'Standard Doc' },
+  { selector: 'article, [role="main"], main, #main, #content, .post-content, .markdown-body', name: 'Standard Doc', bonus: 500 },
 ];
 
 import { isTencentDoc } from './tencent-doc-extractor';
@@ -33,7 +33,7 @@ import { isTencentDoc } from './tencent-doc-extractor';
 export function evaluateCurrentFrameContent(): FrameContentScore {
   const isTopFrame = window === window.top;
   const url = window.location.href;
-  const rawTitle = document.title?.trim() || '';
+  let rawTitle = document.title?.trim() || '';
 
   // 0. Directly identify Tencent Docs / WeChat Docs
   if (isTencentDoc(url)) {
@@ -85,9 +85,9 @@ export function evaluateCurrentFrameContent(): FrameContentScore {
   for (const item of DOCUMENT_CONTAINER_SELECTORS) {
     try {
       const found = document.querySelector(item.selector);
-      if (found && (found.textContent?.trim().length || 0) > 30) {
+      if (found && (item.name === 'Axure' || (found.textContent?.trim().length || 0) > 30)) {
         platformBadge = item.name;
-        containerBonus = 200;
+        containerBonus = item.bonus;
         break;
       }
     } catch {
@@ -95,13 +95,73 @@ export function evaluateCurrentFrameContent(): FrameContentScore {
     }
   }
 
-  // Pure shell penalty: if body contains iframes and very little text, it's just an outer wrapper
-  const childIframes = document.querySelectorAll('iframe');
-  const isWrapperShell = childIframes.length > 0 && wordCount < 300;
+  // Additional Axure heuristics (URL, globals, widgets)
+  const isAxure =
+    platformBadge === 'Axure' ||
+    Boolean(
+      document.querySelector('#base, #mainFrame, .ax_default, [class*="ax_default"]') ||
+        url.includes('axure') ||
+        typeof (window as any).$axure !== 'undefined'
+    );
+
+  if (isAxure) {
+    platformBadge = 'Axure';
+    containerBonus = Math.max(containerBonus, 3500);
+
+    // Axure specific title detection
+    if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1' || rawTitle === 'Axure RP Page') {
+      try {
+        const axPageName = (window as any).$axure?.page?.pageName || (window as any).DATA?.pageName;
+        if (typeof axPageName === 'string' && axPageName.trim()) {
+          rawTitle = axPageName.trim();
+        }
+      } catch {}
+
+      if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1' || rawTitle === 'Axure RP Page') {
+        const axHeading = document.querySelector(
+          '.ax_default[class*="heading"], [class*="heading_1"], [class*="heading_2"], [data-label]'
+        );
+        if (axHeading && axHeading.textContent?.trim()) {
+          rawTitle = axHeading.textContent.trim();
+        }
+      }
+    }
+  }
+
+  // Pure shell penalty: if body contains iframes or is a known workbench shell like Lanhu
+  const childIframes = Array.from(document.querySelectorAll('iframe'));
+  const hasSubstantialChildIframe = childIframes.some((ifr) => {
+    try {
+      const rect = ifr.getBoundingClientRect();
+      return rect.width >= 350 && rect.height >= 250;
+    } catch {
+      return false;
+    }
+  });
+
+  const isLanhuShell = isTopFrame && (url.includes('lanhuapp.com') || url.includes('mastergo.com') || url.includes('modao.cc'));
+  const isWrapperShell = (childIframes.length > 0 && wordCount < 300) || hasSubstantialChildIframe || isLanhuShell;
+
+  // Sniff active menu in Lanhu top window to give meaningful title to the shell
+  if (isLanhuShell) {
+    try {
+      const activeMenuItem = document.querySelector(
+        '[class*="tree"] [class*="active"], [class*="menu"] [class*="active"], [class*="item"][class*="active"], [class*="selected"], [class*="current"]'
+      );
+      if (activeMenuItem && activeMenuItem.textContent?.trim()) {
+        const menuText = activeMenuItem.textContent.trim().split('\n')[0]?.trim();
+        if (menuText && menuText.length < 50) {
+          rawTitle = `${menuText} (蓝湖外壳)`;
+        }
+      }
+    } catch {}
+  }
 
   let baseScore = wordCount * 0.4 + headingsCount * 20 + imageCount * 30 + containerBonus;
 
-  if (isWrapperShell) {
+  if (isLanhuShell) {
+    baseScore = 30; // Lanhu outer shell is strictly an auxiliary container, never the PRD body
+  } else if (isWrapperShell) {
     baseScore *= 0.1; // heavily penalize outer wrapper shells
   } else if (linkRatio > 0.6 && wordCount < 500) {
     baseScore *= 0.2; // penalize sidebar menus with mostly links

@@ -174,6 +174,20 @@ export function markLiveDomForSmartpage(container: Element): LiveDomCaptureResul
         }
       }
     }
+
+    // Mark top-level visual coordinates for absolute-positioned layouts (Axure canvas, wireframes)
+    const isAxureCanvas = container.id === 'base' || Boolean(container.querySelector('.ax_default'));
+    if (isAxureCanvas) {
+      const directChildren = Array.from(container.children);
+      for (const child of directChildren) {
+        if (child instanceof HTMLElement) {
+          const rect = child.getBoundingClientRect();
+          child.setAttribute('data-ps-top', String(Math.round(rect.top + window.scrollY)));
+          child.setAttribute('data-ps-left', String(Math.round(rect.left + window.scrollX)));
+          markedEls.push(child);
+        }
+      }
+    }
   } catch (err) {
     console.warn('[PageSpec] Failed to mark live DOM:', err);
   }
@@ -188,6 +202,8 @@ export function markLiveDomForSmartpage(container: Element): LiveDomCaptureResul
       el.removeAttribute('data-ps-quote');
       el.removeAttribute('data-ps-width');
       el.removeAttribute('data-ps-height');
+      el.removeAttribute('data-ps-top');
+      el.removeAttribute('data-ps-left');
       el.removeAttribute('data-ps-resolved-src');
       el.removeAttribute('data-ps-ignore');
       el.removeAttribute('data-ps-canvas-id');
@@ -202,6 +218,9 @@ export function markLiveDomForSmartpage(container: Element): LiveDomCaptureResul
  */
 export function preprocessSmartpageDom(container: HTMLElement): void {
   if (!container) return;
+
+  // 0. Normalize Axure Canvas layout and clean Axure technical noise
+  normalizeAxureLayout(container);
 
   // 1. Clean zero-width and invisible characters
   cleanZeroWidthChars(container);
@@ -220,6 +239,52 @@ export function preprocessSmartpageDom(container: HTMLElement): void {
 
   // 6. Normalize sub-items and lists
   normalizeListStructures(container);
+}
+
+/**
+ * Normalize Axure RP canvas layout: remove empty technical divs and sort widgets by reading order
+ */
+function normalizeAxureLayout(root: HTMLElement): void {
+  // 1. Clean empty Axure shape backgrounds (#u*_div)
+  const axureDivs = Array.from(root.querySelectorAll('[id$="_div"]'));
+  for (const div of axureDivs) {
+    if (!div.textContent?.trim() && !div.querySelector('img, svg, canvas')) {
+      div.remove();
+    }
+  }
+
+  // 2. Clean Axure hidden empty text layers
+  const hiddenTexts = Array.from(root.querySelectorAll('[id$="_text"]'));
+  for (const el of hiddenTexts) {
+    const style = (el.getAttribute('style') || '').toLowerCase();
+    if ((style.includes('visibility: hidden') || style.includes('display: none')) && !el.textContent?.trim()) {
+      el.remove();
+    }
+  }
+
+  // 3. Sort positioned elements by natural reading order (top-to-bottom, left-to-right)
+  const childrenWithPos = Array.from(root.children).filter(
+    (c) => c instanceof HTMLElement && c.hasAttribute('data-ps-top')
+  ) as HTMLElement[];
+
+  if (childrenWithPos.length > 1) {
+    childrenWithPos.sort((a, b) => {
+      const topA = parseFloat(a.getAttribute('data-ps-top') || '0');
+      const topB = parseFloat(b.getAttribute('data-ps-top') || '0');
+      const leftA = parseFloat(a.getAttribute('data-ps-left') || '0');
+      const leftB = parseFloat(b.getAttribute('data-ps-left') || '0');
+
+      // 15px line tolerance: if vertical distance is small, read left-to-right
+      if (Math.abs(topA - topB) <= 15) {
+        return leftA - leftB;
+      }
+      return topA - topB;
+    });
+
+    for (const child of childrenWithPos) {
+      root.appendChild(child);
+    }
+  }
 }
 
 /**
