@@ -104,8 +104,14 @@ export function findDocumentContainer(doc: Document = document): Element | null 
   for (const selector of PLATFORM_SELECTORS) {
     try {
       const el = doc.querySelector(selector);
-      if (el && (el.textContent?.trim().length || 0) > 40) {
-        return el;
+      if (el) {
+        // Special case for Axure container '#base' or '.ax_default': it can contain widgets with short text or wireframes
+        if ((selector === '#base' || selector === '.ax_default') && (el.children.length > 0 || (el.textContent?.trim().length || 0) > 10)) {
+          return el;
+        }
+        if ((el.textContent?.trim().length || 0) > 40) {
+          return el;
+        }
       }
     } catch {
       // ignore selector errors
@@ -154,17 +160,27 @@ export async function extractPrdBundle(
   }
 
   let rawTitle = document.title?.trim() || '';
-  if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1') {
-    const heading = document.querySelector('h1, h2')?.textContent?.trim();
-    if (heading && heading.length < 60) {
-      rawTitle = heading;
-    } else {
-      try {
-        if (window.top && window.top.document.title?.trim()) {
-          rawTitle = window.top.document.title.trim();
+  if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1' || rawTitle === 'Axure RP Page') {
+    // Check Axure global metadata
+    try {
+      const axPageName = (window as any).$axure?.page?.pageName || (window as any).DATA?.pageName;
+      if (typeof axPageName === 'string' && axPageName.trim()) {
+        rawTitle = axPageName.trim();
+      }
+    } catch {}
+
+    if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1' || rawTitle === 'Axure RP Page') {
+      const heading = document.querySelector('h1, h2, [class*="heading_1"], [class*="heading_2"], .ax_default[class*="heading"]')?.textContent?.trim();
+      if (heading && heading.length < 60) {
+        rawTitle = heading;
+      } else {
+        try {
+          if (window.top && window.top.document.title?.trim()) {
+            rawTitle = window.top.document.title.trim();
+          }
+        } catch {
+          // ignore cross-origin top access restriction
         }
-      } catch {
-        // ignore cross-origin top access restriction
       }
     }
   }
