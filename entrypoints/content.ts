@@ -1,9 +1,11 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { extractPrdBundle } from '../core/extractors/prd-extractor';
-import { extractApiDocumentation } from '../core/extractors/api-extractor';
+import { extractApiDocumentation, listAvailableApiEndpoints } from '../core/extractors/api-extractor';
+import { listDesignArtboards, extractDesignBundle } from '../core/extractors/design-extractor';
 import { buildZipArchive } from '../core/bundler/zip-builder';
 import { evaluateCurrentFrameContent } from '../core/extractors/frame-scorer';
 import { uint8ArrayToBase64 } from '../utils/dom-helpers';
+import { autoTrimNoisySections } from '../utils/markdown-trimmer';
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -56,22 +58,121 @@ export default defineContentScript({
         return true;
       }
 
+      // List Design Artboards on current frame (Mode 1.5 - Design)
+      if (message.type === 'LIST_DESIGN_ARTBOARDS') {
+        try {
+          const scanResult = listDesignArtboards();
+          sendResponse({ ok: true, data: scanResult });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+        return true;
+      }
+
+      // Extract Design Artboards Bundle
+      if (message.type === 'EXTRACT_DESIGN') {
+        const saveMode = message.saveMode || 'zip'; // 'zip' | 'directory'
+        const selectedIds = Array.isArray(message.selectedIds) ? message.selectedIds : undefined;
+
+        (async () => {
+          try {
+            const result = await extractDesignBundle((current, total, msg) => {
+              browser.runtime
+                .sendMessage({
+                  type: 'EXTRACTION_PROGRESS',
+                  mode: 'design',
+                  current,
+                  total,
+                  message: msg,
+                })
+                .catch(() => {});
+            }, selectedIds);
+
+            const serializableAssets = result.assets.map((a) => ({
+              filename: a.filename,
+              base64: uint8ArrayToBase64(a.data),
+            }));
+
+            if (saveMode === 'zip') {
+              const zipBlob = buildZipArchive({
+                markdown: result.markdown,
+                markdownFilename: `${result.sanitizedTitle}-design.md`,
+                assets: result.assets,
+              });
+
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64Url = reader.result as string;
+                const filename = `${result.sanitizedTitle}-design.zip`;
+
+                browser.runtime.sendMessage({
+                  type: 'TRIGGER_DOWNLOAD',
+                  url: base64Url,
+                  filename,
+                });
+
+                sendResponse({
+                  ok: true,
+                  title: result.title,
+                  sanitizedTitle: result.sanitizedTitle,
+                  platform: result.platform,
+                  markdown: result.markdown,
+                  markdownPreview: result.markdown.slice(0, 3000),
+                  assets: serializableAssets,
+                  totalAssets: result.assets.length,
+                  artboardsCount: result.artboardsCount,
+                  warnings: result.warnings,
+                });
+              };
+              reader.readAsDataURL(zipBlob);
+            } else {
+              sendResponse({
+                ok: true,
+                title: result.title,
+                sanitizedTitle: result.sanitizedTitle,
+                platform: result.platform,
+                markdown: result.markdown,
+                markdownPreview: result.markdown.slice(0, 3000),
+                assets: serializableAssets,
+                totalAssets: result.assets.length,
+                artboardsCount: result.artboardsCount,
+                warnings: result.warnings,
+              });
+            }
+          } catch (err: any) {
+            sendResponse({ ok: false, error: err?.message || String(err) });
+          }
+        })();
+        return true;
+      }
+
       // Extract PRD Bundle (Mode 1)
       if (message.type === 'EXTRACT_PRD') {
         const saveMode = message.saveMode || 'zip'; // 'zip' | 'directory'
         const engineMode = message.engineMode || 'auto'; // 'auto' | 'tencent' | 'dom'
+        const autoTrimNoise = message.autoTrimNoise !== false;
 
         (async () => {
           try {
             const result = await extractPrdBundle((current, total, msg) => {
-              browser.runtime.sendMessage({
-                type: 'EXTRACTION_PROGRESS',
-                mode: 'prd',
-                current,
-                total,
-                message: msg,
-              }).catch(() => {});
+              browser.runtime
+                .sendMessage({
+                  type: 'EXTRACTION_PROGRESS',
+                  mode: 'prd',
+                  current,
+                  total,
+                  message: msg,
+                })
+                .catch(() => {});
             }, engineMode);
+
+            let finalMarkdown = result.markdown;
+            let trimmedHeadings: string[] = [];
+            if (autoTrimNoise) {
+              const trimmed = autoTrimNoisySections(result.markdown);
+              finalMarkdown = trimmed.markdown;
+              trimmedHeadings = trimmed.removedHeadings;
+            }
 
             // Convert assets into serializable format with Base64
             const serializableAssets = result.assets.map((a) => ({
@@ -80,9 +181,8 @@ export default defineContentScript({
             }));
 
             if (saveMode === 'zip') {
-              // Build ZIP archive and trigger browser download
               const zipBlob = buildZipArchive({
-                markdown: result.markdown,
+                markdown: finalMarkdown,
                 markdownFilename: `${result.sanitizedTitle}.md`,
                 assets: result.assets,
               });
@@ -102,23 +202,27 @@ export default defineContentScript({
                   ok: true,
                   title: result.title,
                   sanitizedTitle: result.sanitizedTitle,
-                  markdown: result.markdown,
-                  markdownPreview: result.markdown.slice(0, 3000),
+                  rawMarkdown: result.markdown,
+                  markdown: finalMarkdown,
+                  markdownPreview: finalMarkdown.slice(0, 3000),
+                  assets: serializableAssets,
                   totalAssets: result.assets.length,
+                  trimmedHeadings,
                   warnings: result.warnings,
                 });
               };
               reader.readAsDataURL(zipBlob);
             } else {
-              // Direct directory mode: return raw serializable assets
               sendResponse({
                 ok: true,
                 title: result.title,
                 sanitizedTitle: result.sanitizedTitle,
-                markdown: result.markdown,
-                markdownPreview: result.markdown.slice(0, 3000),
+                rawMarkdown: result.markdown,
+                markdown: finalMarkdown,
+                markdownPreview: finalMarkdown.slice(0, 3000),
                 assets: serializableAssets,
                 totalAssets: result.assets.length,
+                trimmedHeadings,
                 warnings: result.warnings,
               });
             }
@@ -129,24 +233,39 @@ export default defineContentScript({
         return true;
       }
 
+      // List Available API Endpoints on current frame
+      if (message.type === 'LIST_API_ENDPOINTS') {
+        (async () => {
+          try {
+            const listResult = await listAvailableApiEndpoints();
+            sendResponse({ ok: true, data: listResult });
+          } catch (err: any) {
+            sendResponse({ ok: false, error: err?.message || String(err) });
+          }
+        })();
+        return true;
+      }
+
       // Extract API Documentation (Mode 2)
       if (message.type === 'EXTRACT_API') {
         const saveMode = message.saveMode || 'download'; // 'download' | 'directory'
+        const selectedKeys = Array.isArray(message.selectedKeys) ? message.selectedKeys : undefined;
 
         (async () => {
           try {
             const result = await extractApiDocumentation((current, total, msg) => {
-              browser.runtime.sendMessage({
-                type: 'EXTRACTION_PROGRESS',
-                mode: 'api',
-                current,
-                total,
-                message: msg,
-              }).catch(() => {});
-            });
+              browser.runtime
+                .sendMessage({
+                  type: 'EXTRACTION_PROGRESS',
+                  mode: 'api',
+                  current,
+                  total,
+                  message: msg,
+                })
+                .catch(() => {});
+            }, selectedKeys);
 
             if (saveMode === 'download') {
-              // Trigger direct Markdown download
               const blob = new Blob([result.markdown], { type: 'text/markdown;charset=utf-8' });
               const reader = new FileReader();
               reader.onloadend = () => {
@@ -171,7 +290,6 @@ export default defineContentScript({
               };
               reader.readAsDataURL(blob);
             } else {
-              // Direct directory mode
               sendResponse({
                 ok: true,
                 title: result.title,

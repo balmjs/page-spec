@@ -9,6 +9,20 @@ export interface ApiExtractionResult {
   endpointsCount: number;
 }
 
+export interface ApiEndpointSummary {
+  key: string; // e.g. "POST /api/v1/users"
+  method: string; // "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
+  path: string;
+  summary: string;
+  tag: string;
+}
+
+export interface ApiEndpointListResult {
+  title: string;
+  format: 'openapi-spec' | 'dom-scraped';
+  endpoints: ApiEndpointSummary[];
+}
+
 export interface SchemaFieldRow {
   path: string;
   type: string;
@@ -231,14 +245,20 @@ function renderFieldRowsToTable(rows: SchemaFieldRow[]): string {
 
 /**
  * Convert an OpenAPI 2.0 (Swagger) or OpenAPI 3.0 specification object into Markdown.
+ * Optionally filters to a selected subset of endpoints (`METHOD /path`).
  */
-export function convertOpenApiJsonToMarkdown(spec: any, pageUrl: string): string {
+export function convertOpenApiJsonToMarkdown(
+  spec: any,
+  pageUrl: string,
+  selectedKeys?: string[]
+): { markdown: string; endpointsCount: number } {
   const title = spec.info?.title || 'API Specification';
   const version = spec.info?.version || '1.0.0';
   const description = spec.info?.description || '';
   const basePath = spec.basePath || '';
   const servers = spec.servers ? spec.servers.map((s: any) => s.url).join(', ') : basePath || 'N/A';
 
+  const selectedSet = selectedKeys && selectedKeys.length > 0 ? new Set(selectedKeys) : null;
   let endpointsCount = 0;
   const sections: string[] = [];
 
@@ -257,9 +277,14 @@ export function convertOpenApiJsonToMarkdown(spec: any, pageUrl: string): string
     for (const method of ['get', 'post', 'put', 'delete', 'patch', 'options', 'head']) {
       const op = (pathItem as any)[method];
       if (!op) continue;
-      endpointsCount++;
 
       const upperMethod = method.toUpperCase();
+      const opKey = `${upperMethod} ${pathStr}`;
+      if (selectedSet && !selectedSet.has(opKey)) {
+        continue;
+      }
+
+      endpointsCount++;
       const summary = op.summary || op.operationId || '';
       const opDesc = op.description || '';
 
@@ -385,9 +410,13 @@ export function convertOpenApiJsonToMarkdown(spec: any, pageUrl: string): string
     extracted_at: new Date().toISOString(),
     generator: 'PageSpec-OpenAPI-Engine',
     endpoints_count: endpointsCount,
+    ...(selectedSet ? { filtered_subset: true } : {}),
   });
 
-  return `${frontmatter}\n${sections.join('\n')}`;
+  return {
+    markdown: `${frontmatter}\n${sections.join('\n')}`,
+    endpointsCount,
+  };
 }
 
 /**
@@ -511,18 +540,9 @@ function requestOpenApiSpecFromMainWorld(timeoutMs = 2000): Promise<any | null> 
 }
 
 /**
- * Extract structured API documentation as clean Markdown.
+ * Shared OpenAPI / Swagger JSON sniffer.
  */
-export async function extractApiDocumentation(
-  onProgress?: (pct: number, total: number, msg: string) => void
-): Promise<ApiExtractionResult> {
-  const rawTitle = document.title?.trim() || 'API_Documentation';
-  const cleanTitle = sanitizeFilename(rawTitle, 'API_Spec');
-  const sourceUrl = window.location.href;
-
-  onProgress?.(10, 100, '正在嗅探页面 OpenAPI / Swagger 数据源...');
-
-  // 1. Attempt to sniff in-page Swagger / OpenAPI JSON directly from Main World
+async function sniffRawOpenApiSpec(): Promise<any | null> {
   let foundSpec: any = null;
   try {
     foundSpec = await requestOpenApiSpecFromMainWorld(1500);
@@ -530,7 +550,6 @@ export async function extractApiDocumentation(
     // ignore sniffer error
   }
 
-  // 2. Check embedded JSON scripts if Main World sniffing did not yield spec
   if (!foundSpec || (!foundSpec.paths && !foundSpec.openapi && !foundSpec.swagger)) {
     const specElement = document.querySelector('script[type="application/json"]#swagger-data, script#__NEXT_DATA__');
     if (specElement && specElement.textContent) {
@@ -545,15 +564,71 @@ export async function extractApiDocumentation(
     }
   }
 
+  return foundSpec && (foundSpec.paths || foundSpec.openapi || foundSpec.swagger) ? foundSpec : null;
+}
+
+/**
+ * List available API endpoints on the current page so developers can selectively extract a subset.
+ */
+export async function listAvailableApiEndpoints(): Promise<ApiEndpointListResult> {
+  const rawTitle = document.title?.trim() || 'API_Documentation';
+  const foundSpec = await sniffRawOpenApiSpec();
+
+  if (foundSpec && foundSpec.paths) {
+    const endpoints: ApiEndpointSummary[] = [];
+    for (const [pathStr, pathItem] of Object.entries(foundSpec.paths)) {
+      if (!pathItem || typeof pathItem !== 'object') continue;
+      for (const method of ['get', 'post', 'put', 'delete', 'patch', 'options', 'head']) {
+        const op = (pathItem as any)[method];
+        if (!op) continue;
+        const upperMethod = method.toUpperCase();
+        const tag = Array.isArray(op.tags) && op.tags.length > 0 ? String(op.tags[0]) : 'Default';
+        endpoints.push({
+          key: `${upperMethod} ${pathStr}`,
+          method: upperMethod,
+          path: pathStr,
+          summary: String(op.summary || op.operationId || '').trim(),
+          tag,
+        });
+      }
+    }
+    return {
+      title: foundSpec.info?.title || rawTitle,
+      format: 'openapi-spec',
+      endpoints,
+    };
+  }
+
+  return {
+    title: rawTitle,
+    format: 'dom-scraped',
+    endpoints: [],
+  };
+}
+
+/**
+ * Extract structured API documentation as clean Markdown.
+ */
+export async function extractApiDocumentation(
+  onProgress?: (pct: number, total: number, msg: string) => void,
+  selectedKeys?: string[]
+): Promise<ApiExtractionResult> {
+  const rawTitle = document.title?.trim() || 'API_Documentation';
+  const cleanTitle = sanitizeFilename(rawTitle, 'API_Spec');
+  const sourceUrl = window.location.href;
+
+  onProgress?.(10, 100, '正在嗅探页面 OpenAPI / Swagger 数据源...');
+
+  const foundSpec = await sniffRawOpenApiSpec();
+
   // If OpenAPI JSON spec was found, use Engine A
-  if (foundSpec && (foundSpec.paths || foundSpec.openapi || foundSpec.swagger)) {
+  if (foundSpec) {
     onProgress?.(50, 100, '发现底层 OpenAPI 规范，生成精确结构化 Markdown...');
-    const markdown = convertOpenApiJsonToMarkdown(foundSpec, sourceUrl);
-    const endpointsCount = Object.keys(foundSpec.paths || {}).length;
+    const { markdown, endpointsCount } = convertOpenApiJsonToMarkdown(foundSpec, sourceUrl, selectedKeys);
     onProgress?.(100, 100, 'OpenAPI 文档转换完成');
     return {
-      title: rawTitle,
-      sanitizedTitle: cleanTitle,
+      title: foundSpec.info?.title || rawTitle,
+      sanitizedTitle: sanitizeFilename(foundSpec.info?.title || rawTitle, cleanTitle),
       markdown,
       format: 'openapi-spec',
       endpointsCount,

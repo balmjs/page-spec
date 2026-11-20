@@ -1,6 +1,6 @@
 {
   "name": "page-spec",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cross-browser extension to extract authenticated web PRDs & API specs into clean Markdown and prototype assets directly to local requirements folders.",
   "private": true,
   "license": "MIT",
