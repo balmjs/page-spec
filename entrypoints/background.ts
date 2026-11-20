@@ -57,7 +57,7 @@ export default defineBackground(() => {
       return true;
     }
 
-    // Proxy image download across domains to bypass CORS restrictions
+    // Proxy image download across domains to bypass CORS restrictions (Base64 only, avoiding 8x JSON array bloat)
     if (message.type === 'FETCH_IMAGE_DATA') {
       const { url } = message;
       (async () => {
@@ -69,8 +69,45 @@ export default defineBackground(() => {
           const buffer = await blob.arrayBuffer();
           const uint8 = new Uint8Array(buffer);
           const base64 = uint8ArrayToBase64(uint8);
-          const data = Array.from(uint8);
-          sendResponse({ ok: true, data, base64, mime });
+          sendResponse({ ok: true, base64, mime });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // Push standardized SpecBundle to configured SpecLoop server (bypasses UI CORS)
+    if (message.type === 'PUSH_TO_SPECLOOP') {
+      const { endpoint, apiToken, payload } = message;
+      (async () => {
+        try {
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+          };
+          if (apiToken) {
+            headers['Authorization'] = `Bearer ${apiToken}`;
+          }
+          const resp = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          });
+          const rawText = await resp.text();
+          let data: any = null;
+          try {
+            data = JSON.parse(rawText);
+          } catch {
+            data = { message: rawText };
+          }
+          if (!resp.ok) {
+            throw new Error(data?.error || data?.message || `HTTP ${resp.status}`);
+          }
+          sendResponse({
+            ok: true,
+            taskId: data?.taskId || data?.data?.taskId,
+            message: data?.message || '推送成功',
+          });
         } catch (err: any) {
           sendResponse({ ok: false, error: err?.message || String(err) });
         }

@@ -31,16 +31,24 @@ It extracts authenticated web content into structured **Markdown** bundles and l
 - **Session-Authenticated Prototype Assets**: Runs directly within the authenticated session context, preserving login cookies to download high-res images, recordings, and Canvas elements concurrently, rewriting them to isolated relative paths (`./assets/<spec>/prototype-001.png`).
 - **Tencent Docs AST & SmartPage Engine**: Direct AST and block normalization for Tencent Docs and WeChat SmartPages, preserving headings, blockquotes, lists, and tables without layout destruction.
 
-### 2. ⚡ Direct-to-Disk Workspace Synchronization
+### 2. 🎨 UI Design & Artboard Extractor (Lanhu / MasterGo / Modao / Web)
+- **Original HD Image Recovery**: Automatically detects design artboards across Lanhu (`lanhuapp.com`), MasterGo, Modao, and web galleries, stripping CDN/OSS thumbnail resize parameters (`x-oss-process`, `imageMogr2`, etc.) to download full-resolution originals with automatic fallback.
+- **Selective Artboard Picker**: Search and check only the artboards needed for your current feature task, capturing visible design annotations and color tokens into `<title>-design.md` + `./assets/<title>/design-xxx.<ext>`.
+
+### 3. ⚡ Direct-to-Disk Sync, Incremental Diff & Section Trimming
 - **File System Access API**: Bind your local project's `requirements/` directory once; permission handles persist automatically across browser restarts.
-- **Zero Unzipping, Zero Drag-and-Drop**: Emits `<title>.md` and its corresponding `assets/` directory straight onto your disk. Open your IDE and immediately prompt `@requirements/PRD-xxx.md`.
-- **ZIP Download Fallback**: Automatically falls back to standard `.zip` downloads on unsupported browsers or when directory write permission is declined.
+- **Automatic Incremental Spec Diff**: When re-extracting an updated PRD, Design, or API doc over an existing local file, PageSpec computes section- & line-level changes and emits `<title>.diff.md` along with a one-click incremental AI prompt.
+- **Interactive Section Trimmer**: Automatically skips noisy sections (e.g., *Revision History* / *Changelog*) and provides a collapsible section tree to prune unwanted headings and overwrite locally.
 
-### 3. 🔌 Structured API Spec Extraction
-- **Raw OpenAPI / Swagger Sniffing**: Sniffs underlying OpenAPI/Swagger JSON specifications to generate high-fidelity Markdown, automatically resolving and dereferencing `$ref` schemas and flattening attribute tables.
-- **Deep DOM Parser**: Seamlessly flattens multi-layer parameter tables and expands accordion panels in Knife4j, Apifox, and Redoc.
+### 4. 🔌 Selective OpenAPI / Swagger Spec Extraction
+- **Endpoint Search & Filtering**: Sniffs OpenAPI/Swagger endpoints into a searchable, tag-filterable checklist so you export only the exact endpoints required for your current task—eliminating 90% of irrelevant context noise.
+- **High-Fidelity `$ref` Dereferencing**: Automatically resolves `$ref` schemas, flattens nested dot-path attribute tables, and synthesizes example JSON payloads; falls back cleanly to Deep DOM parsing for Knife4j, Apifox, and Redoc.
 
-### 4. 🌐 Full Internationalization (i18n)
+### 5. 📦 SpecBundle & SpecLoop Interoperability
+- **Standard `.specbundle.zip`**: Export any PRD, Design, or API extraction with a structured `manifest.json` for downstream toolchain ingestion.
+- **Optional SpecLoop Bridge**: Optionally configure a self-hosted `SpecLoop` server URL in Settings to push third-party PRDs, Lanhu artboards, and API specs directly into your team's closed-loop workspace while keeping core usage 100% offline.
+
+### 6. 🌐 Full Internationalization (i18n)
 - **Automatic Locale Detection**: Automatically detects and adapts to your browser or OS preferred language (English or Simplified Chinese).
 - **On-the-Fly Toggle**: Easily switch languages anytime using the `EN / 中` button in the header bar.
 

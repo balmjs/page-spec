@@ -139,11 +139,24 @@ export function evaluateCurrentFrameContent(): FrameContentScore {
     }
   });
 
-  const isLanhuShell = isTopFrame && (url.includes('lanhuapp.com') || url.includes('mastergo.com') || url.includes('modao.cc'));
+  const isDesignHost =
+    isTopFrame &&
+    (url.includes('lanhuapp.com') ||
+      url.includes('mastergo.com') ||
+      url.includes('modao.cc') ||
+      url.includes('figma.com'));
+  // Only treat design host top window as a pure outer shell when it embeds a substantial prototype iframe (e.g. Axure inside Lanhu)
+  const isLanhuShell = isDesignHost && hasSubstantialChildIframe;
   const isWrapperShell = (childIframes.length > 0 && wordCount < 300) || hasSubstantialChildIframe || isLanhuShell;
 
-  // Sniff active menu in Lanhu top window to give meaningful title to the shell
-  if (isLanhuShell) {
+  // Sniff active menu in Lanhu top window to give meaningful title
+  if (isDesignHost) {
+    if (!platformBadge) {
+      if (url.includes('lanhuapp.com')) platformBadge = '蓝湖 (Lanhu)';
+      else if (url.includes('mastergo.com')) platformBadge = 'MasterGo';
+      else if (url.includes('modao.cc')) platformBadge = '墨刀 (Modao)';
+      else if (url.includes('figma.com')) platformBadge = 'Figma';
+    }
     try {
       const activeMenuItem = document.querySelector(
         '[class*="tree"] [class*="active"], [class*="menu"] [class*="active"], [class*="item"][class*="active"], [class*="selected"], [class*="current"]'
@@ -151,7 +164,7 @@ export function evaluateCurrentFrameContent(): FrameContentScore {
       if (activeMenuItem && activeMenuItem.textContent?.trim()) {
         const menuText = activeMenuItem.textContent.trim().split('\n')[0]?.trim();
         if (menuText && menuText.length < 50) {
-          rawTitle = `${menuText} (蓝湖外壳)`;
+          rawTitle = isLanhuShell ? `${menuText} (蓝湖外壳)` : menuText;
         }
       }
     } catch {}
