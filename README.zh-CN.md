@@ -5,7 +5,7 @@
 <h1 align="center">PageSpec</h1>
 
 <p align="center">
-  <b>高效前端需求与接口规范提取浏览器插件 (Chrome MV3 & Firefox MV2/MV3)</b><br />
+  <b>高效前端需求、设计稿与接口规范提取浏览器插件 (Chrome MV3 & Firefox MV2/MV3)</b><br />
   <sub><a href="README.md">English</a> | 简体中文</sub>
 </p>
 
@@ -17,9 +17,9 @@
 
 ---
 
-**PageSpec** 是一款专为前端工程师与全栈开发者打造的高效浏览器插件，能够一键穿透各类复杂、嵌套或跨域 iframe 需求页面（腾讯文档、微信智能/轻文档、Axure、飞书、语雀、Confluence、Swagger/OpenAPI 等）。
+**PageSpec** 是一款专为前端工程师与全栈开发者打造的高效浏览器插件，能够一键穿透各类复杂、嵌套或跨域 iframe 需求页面（腾讯文档、微信智能/轻文档、Axure、蓝湖 Lanhu、MasterGo、飞书、语雀、Confluence、Swagger/OpenAPI 等）。
 
-在保留当前会话登录鉴权态的前提下，自动提取正文并转化为高保真结构化 **Markdown**，并发下载高清晰度原型图与录屏封面，直接保存到本地项目的 `requirements/` 目录中。**全程 100% 本地离线解析**，专为将复杂需求结构化为高质量上下文而生，即刻赋能 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI Coding Agent。
+只需绑定一次本地项目根目录，插件即可在保留当前会话登录鉴权态的前提下，按类型自动归档至项目下的 **`specs/{prd,design,api,qa}`** 分层目录（若项目根目录尚无 `specs/` 则自动创建，防套娃嵌套，并自动兼容识别存量 `requirements/` 目录），就近内聚图片资源。**全程 100% 本地离线解析**，即刻赋能 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI Coding Agent。
 
 ---
 
@@ -28,25 +28,25 @@
 ### 1. 🛡️ 嵌套 / 跨域 iframe 智能穿透与靶向提取
 - **多层 iframe 自动穿透**：通过 Chrome MV3 `all_frames: true` 深入所有子框架，打破跨域隔离限制。
 - **正文密度打分机制 (Content Density Scoring)**：智能区分左侧菜单/目录 iframe 与正文内容 iframe，自动锁定核心需求文档区，剔除侧栏、顶部杂音与高密度超链接菜单。
-- **带鉴权的原型图抓取**：在正文 frame 真实会话下运行，自动携带登录态 Cookie 并发下载图片与 Canvas，转换为本地隔离的相对路径引用（`./assets/<文档名>/prototype-001.png`）。
+- **带鉴权的原型图抓取**：在正文 frame 真实会话下运行，自动携带登录态 Cookie 并发下载图片与 Canvas，转换为同级相对路径引用（`./assets/<文档名>/prototype-001.png`）。
 - **腾讯文档 AST 与轻文档优化引擎**：针对腾讯文档与微信智能/轻文档提供专用 AST 解析与 DOM 规整处理器，完美保留各级标题、引用块（`>`）、列表嵌套缩进及表格布局。
 
 ### 2. 🎨 蓝湖 / 在线设计稿高保真提取
 - **无损原图自动还原**：自动嗅探蓝湖（`lanhuapp.com`）、MasterGo、墨刀及网页设计图集中的画板，智能剥离 OSS/COS 缩略图缩放参数（`x-oss-process`、`imageMogr2` 等）并发抓取高清设计原图（签名受限时自动回退原地址）。
-- **画板搜索按需勾选**：支持按画板名称搜索与勾选本次任务所需的设计图，同步抓取页面批注与色值 Token，输出 `<文档名>-design.md` 与 `./assets/<文档名>/design-xxx.<ext>`。
+- **画板搜索按需勾选**：支持按画板名称搜索与勾选本次任务所需的设计图，同步抓取页面批注与色值 Token，自动落盘至 `specs/design/<文档名>.md` 与 `./assets/<文档名>/design-xxx.<ext>`。
 
-### 3. ⚡ 本地直写、增量变更 Diff 与章节精简裁剪
-- **File System Access API 支持**：一键绑定本地项目 `requirements/` 目录，权限句柄持久化存储，零解压零拖拽直写磁盘。
-- **本地增量 Diff 自动对比**：当产品修改 PRD 或后端修改接口再次提取时，覆写前自动对比磁盘旧版 `.md`，生成 `<文档名>.diff.md` 并提供一键复制增量修改 AI 提示词。
+### 3. ⚡ 智能 `specs/` 分层直写、增量 Diff 与章节裁剪
+- **自动分层目录与防套娃**：直接选中本地项目根目录（如 `my-app/`）即可，提取 PRD 自动保存至 `specs/prd/`、设计稿保存至 `specs/design/`、接口文档保存至 `specs/api/`（若老项目已有 `requirements/` 自动兼容沿用，也可在设置中手动锁定根目录策略）。
+- **本地增量 Diff 自动对比**：当产品修改 PRD 或后端修改接口再次提取时，覆写前自动对比磁盘旧版 `.md`，在同级目录生成 `<文档名>.diff.md` 并提供一键复制增量修改 AI 提示词。
 - **噪音章节自动过滤 & 可视化裁剪**：默认自动跳过“修订历史 / 变更记录”等噪音章节，结果卡片内置可折叠章节树，支持随时勾选剔除无关段落并覆写本地文件。
 
 ### 4. 🔌 OpenAPI / Swagger 接口按需勾选提取
 - **按需搜索过滤子集**：先嗅探列出当前页全部 API 接口，支持按路径、中文名或 Tag 分组搜索勾选本次任务所需的 1~N 个接口，剔除 90% 无关上下文噪音。
 - **高保真 `$ref` 递归解引用**：自动打平多层嵌套点路径属性表并合成 Example JSON，无底层规范时无缝降级兼容 Knife4j、Apifox、Redoc 的 DOM 深度解析。
 
-### 5. 📦 标准 `.specbundle.zip` 与 SpecLoop 平台互通
+### 5. 📦 标准 `.specbundle.zip` 与克制型 SpecLoop 双向互通（可选）
 - **标准离线归档包**：一键导出包含 `manifest.json` 元数据、Markdown、Diff 文件与静态资源的 `.specbundle.zip`。
-- **可选 SpecLoop 直推桥接**：在「目录与配置」页可选填写自建 `SpecLoop` 平台地址后，支持将第三方需求、蓝湖设计稿与接口一键推送入库（未配置时保持 100% 纯离线体验）。
+- **保持纯离线初心 · 默认不打扰**：未连接 `SpecLoop` 时界面 100% 纯净无多余入口；若团队部署了 `SpecLoop` 闭环平台，支持网页一键授权连接（免手填 Token）、通过**默认不勾选**的复选框按需同步至任务、一键反向拉取定稿全套规格或 QA 打回修复包至 `specs/qa/`，并条件解锁「实测抓虫伴侣」标签页（支持一键视口截屏 + 抓取 Console/HTTP 报错）。
 
 ### 6. 🌐 完整国际化多语言支持 (i18n)
 - **智能语言检测**：优先识别浏览器或客户端操作系统默认语言（中文环境默认简体中文，海外环境默认英文）。
@@ -56,21 +56,27 @@
 
 ## 💡 AI Agent Coding 推荐工作流
 
-```
-[ 浏览器打开需求/接口文档 ]
-            │
-     ( 点击 PageSpec )
-            ▼
-[ 一键直写本地 requirements/ 目录 ]
- ├── PRD-用户模块.md
- └── assets/PRD-用户模块/
-       ├── prototype-001.png
-       └── prototype-002.jpg
-            │
-            ▼
+```text
+[ 浏览器打开 PRD / 蓝湖设计稿 / Swagger 接口 ]
+                     │
+              ( 点击 PageSpec )
+                     ▼
+[ 自动归档至 <项目根目录>/specs/ ]
+  ├── prd/
+  │     ├── 用户模块.md
+  │     └── assets/用户模块/prototype-001.png
+  ├── design/
+  │     ├── 用户模块.md
+  │     └── assets/用户模块/design-001.png
+  ├── api/
+  │     └── 用户模块.md
+  └── qa/                     （可选：从 SpecLoop 拉取打回修复包）
+        └── 用户模块-bugs.md
+                     │
+                     ▼
 [ 在 Cursor / Claude Code 中直接对话 ]
- "@requirements/PRD-用户模块.md 请根据该需求文档与对应 assets/PRD-用户模块/
-  原型图，实现该功能模块及相关组件"
+  "@specs/prd/用户模块.md @specs/design/用户模块.md @specs/api/用户模块.md
+   请严格对照需求、设计画板与接口契约完成功能开发"
 ```
 
 ---
