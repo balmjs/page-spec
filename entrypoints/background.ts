@@ -25,7 +25,9 @@ const PENDING_AUTH_KEY = 'pagespec_pending_auth_origin';
 
 function safeOrigin(rawUrl: string): string {
   try {
-    return new URL(rawUrl).origin;
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    return u.origin && u.origin !== 'null' ? u.origin : '';
   } catch {
     return '';
   }

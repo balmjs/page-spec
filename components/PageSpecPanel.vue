@@ -47,6 +47,7 @@ import {
   saveSpecLoopConfig,
   disconnectSpecLoop,
   isSpecLoopConnected,
+  normalizeSpecLoopBaseUrl,
   startSpecLoopAuthHandshake,
   verifySpecLoopConnection,
   fetchSpecLoopProjects,
@@ -552,8 +553,15 @@ async function handleConnectSpecLoop() {
     specLoopConnError.value = '请先输入 SpecLoop 服务地址';
     return;
   }
+  const normalized = normalizeSpecLoopBaseUrl(url);
+  if (!normalized) {
+    specLoopConnError.value = '服务地址格式无效，请输入如 http://localhost:8080 或 https://specloop.yourdomain.com';
+    return;
+  }
+  specLoopConfig.value.baseUrl = normalized.baseUrl;
+  // Save BEFORE opening the new tab, because Chrome closes the popup immediately on tabs.create()
   await saveSpecLoopConfig(specLoopConfig.value);
-  const res = await startSpecLoopAuthHandshake(url);
+  const res = await startSpecLoopAuthHandshake(normalized.baseUrl);
   if (!res.ok) {
     specLoopConnError.value = res.error || '无法打开授权页';
   }

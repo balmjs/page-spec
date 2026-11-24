@@ -69,7 +69,39 @@ export interface QaDiagnosticSnapshot {
 }
 
 const STORAGE_KEY = 'pagespec_specloop_config';
+const PENDING_AUTH_KEY = 'pagespec_pending_auth_origin';
 export const PAGESPEC_VERSION = '1.2.0';
+
+export function normalizeSpecLoopBaseUrl(raw: string): { baseUrl: string; origin: string } | null {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+
+  let candidate = trimmed;
+  if (!/^https?:\/\//i.test(candidate)) {
+    const isLocalHost = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?(\/|$)/i.test(
+      candidate
+    );
+    candidate = `${isLocalHost ? 'http' : 'https'}://${candidate}`;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (!parsed.origin || parsed.origin === 'null') return null;
+
+    // Strip hash/query and any accidental SpecLoop SPA route suffix
+    let pathname = parsed.pathname.replace(/\/+$/, '');
+    if (/^\/(auth|board|tasks|projects|admin|login|api)(\/|$)/i.test(pathname)) {
+      pathname = '';
+    }
+    return {
+      baseUrl: `${parsed.origin}${pathname}`,
+      origin: parsed.origin,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export function isSpecLoopConnected(config?: Partial<SpecLoopConfig> | null): boolean {
   return Boolean(config?.baseUrl?.trim() && config?.apiToken?.trim());
@@ -100,8 +132,9 @@ export async function getSpecLoopConfig(): Promise<SpecLoopConfig> {
 }
 
 export async function saveSpecLoopConfig(config: SpecLoopConfig): Promise<void> {
+  const normalized = normalizeSpecLoopBaseUrl(config.baseUrl);
   const cleaned: SpecLoopConfig = {
-    baseUrl: config.baseUrl.trim().replace(/\/+$/, ''),
+    baseUrl: normalized ? normalized.baseUrl : config.baseUrl.trim().replace(/\/+$/, ''),
     apiToken: config.apiToken.trim(),
     defaultTaskId: config.defaultTaskId.trim(),
     defaultProjectId: (config.defaultProjectId || '').trim(),
@@ -155,17 +188,57 @@ export async function specLoopApiRequest<T = any>(params: {
  */
 export async function startSpecLoopAuthHandshake(
   baseUrl: string
-): Promise<{ ok: boolean; error?: string }> {
-  const cleaned = baseUrl.trim().replace(/\/+$/, '');
-  if (!cleaned) {
-    return { ok: false, error: '请先填写 SpecLoop 服务地址' };
+): Promise<{ ok: boolean; normalizedBaseUrl?: string; error?: string }> {
+  const parsed = normalizeSpecLoopBaseUrl(baseUrl);
+  if (!parsed) {
+    return {
+      ok: false,
+      error: '服务地址格式无效，请输入完整地址（如 http://localhost:8080 或 https://specloop.yourdomain.com）',
+    };
   }
-  const res: any = await browser.runtime.sendMessage({
-    type: 'OPEN_SPECLOOP_AUTH_TAB',
-    baseUrl: cleaned,
-    version: PAGESPEC_VERSION,
-  });
-  return res || { ok: false, error: '打开授权页失败' };
+
+  const authUrl = `${parsed.baseUrl}/#/auth/extension-connect?client=pagespec&version=${encodeURIComponent(PAGESPEC_VERSION)}`;
+
+  // Record expected origin directly in extension storage so handshake verification works reliably
+  try {
+    await browser.storage.local.set({ [PENDING_AUTH_KEY]: parsed.origin });
+  } catch (err: any) {
+    return { ok: false, error: `写入授权状态失败：${err?.message || String(err)}` };
+  }
+
+  // Open auth tab directly from Popup/SidePanel without relying on MV3 Service Worker message wake-up
+  try {
+    if (browser.tabs?.create) {
+      await browser.tabs.create({ url: authUrl });
+      return { ok: true, normalizedBaseUrl: parsed.baseUrl };
+    }
+  } catch {
+    // fall through to background / window.open fallback
+  }
+
+  try {
+    const res: any = await browser.runtime.sendMessage({
+      type: 'OPEN_SPECLOOP_AUTH_TAB',
+      baseUrl: parsed.baseUrl,
+      version: PAGESPEC_VERSION,
+    });
+    if (res?.ok) {
+      return { ok: true, normalizedBaseUrl: parsed.baseUrl };
+    }
+  } catch {
+    // fall through to window.open
+  }
+
+  try {
+    const win = window.open(authUrl, '_blank', 'noopener');
+    if (win) {
+      return { ok: true, normalizedBaseUrl: parsed.baseUrl };
+    }
+  } catch {
+    // ignore
+  }
+
+  return { ok: false, error: `无法自动打开授权页，请手动访问：${authUrl}` };
 }
 
 /**
