@@ -1,6 +1,7 @@
 /**
- * SpecLoop Bridge Utilities
- * Handles optional SpecLoop server configuration and standardized SpecBundle export / HTTP push.
+ * SpecLoop Bridge Utilities (v1.2)
+ * Handles optional SpecLoop server configuration, one-click extension handshake,
+ * dynamic project/task listing, SpecBundle export/push, and live QA companion APIs.
  */
 
 import { buildSpecBundleArchive, type SpecBundleManifest } from '../core/bundler/zip-builder';
@@ -11,10 +12,68 @@ export interface SpecLoopConfig {
   baseUrl: string;
   apiToken: string;
   defaultTaskId: string;
+  defaultProjectId: string;
+  userEmail?: string;
+  userDisplayName?: string;
+}
+
+export interface SpecLoopProjectSummary {
+  id: string;
+  slug: string;
+  name: string;
+  workflowMode: string;
+  defaultReleaseBranch?: string;
+}
+
+export interface SpecLoopTaskSummary {
+  id: string;
+  projectId: string;
+  title: string;
+  sanitizedTitle: string;
+  currentStage: string;
+  failedTestCount?: number;
+  passedTestCount?: number;
+  totalTestCount?: number;
+  prdSections?: string[];
+}
+
+export interface SpecLoopTestItem {
+  id: string;
+  taskId: string;
+  category: string;
+  boundSection?: string;
+  title: string;
+  steps: string;
+  expectedResult: string;
+  priority: string;
+  status: 'pending' | 'passed' | 'failed' | 'stale';
+  testerNote?: string;
+  screenshotUrl?: string;
+  pageUrl?: string;
+  checkedBy?: string;
+  checkedAt?: string;
+}
+
+export interface QaDiagnosticEntry {
+  kind: 'console' | 'exception' | 'http';
+  message: string;
+  timestamp: string;
+}
+
+export interface QaDiagnosticSnapshot {
+  url: string;
+  title: string;
+  viewport: string;
+  userAgent: string;
+  errors: QaDiagnosticEntry[];
 }
 
 const STORAGE_KEY = 'pagespec_specloop_config';
-export const PAGESPEC_VERSION = '1.1.0';
+export const PAGESPEC_VERSION = '1.2.0';
+
+export function isSpecLoopConnected(config?: Partial<SpecLoopConfig> | null): boolean {
+  return Boolean(config?.baseUrl?.trim() && config?.apiToken?.trim());
+}
 
 export async function getSpecLoopConfig(): Promise<SpecLoopConfig> {
   try {
@@ -24,9 +83,19 @@ export async function getSpecLoopConfig(): Promise<SpecLoopConfig> {
       baseUrl: cfg?.baseUrl || '',
       apiToken: cfg?.apiToken || '',
       defaultTaskId: cfg?.defaultTaskId || '',
+      defaultProjectId: cfg?.defaultProjectId || '',
+      userEmail: cfg?.userEmail || '',
+      userDisplayName: cfg?.userDisplayName || '',
     };
   } catch {
-    return { baseUrl: '', apiToken: '', defaultTaskId: '' };
+    return {
+      baseUrl: '',
+      apiToken: '',
+      defaultTaskId: '',
+      defaultProjectId: '',
+      userEmail: '',
+      userDisplayName: '',
+    };
   }
 }
 
@@ -35,8 +104,235 @@ export async function saveSpecLoopConfig(config: SpecLoopConfig): Promise<void> 
     baseUrl: config.baseUrl.trim().replace(/\/+$/, ''),
     apiToken: config.apiToken.trim(),
     defaultTaskId: config.defaultTaskId.trim(),
+    defaultProjectId: (config.defaultProjectId || '').trim(),
+    userEmail: config.userEmail?.trim() || '',
+    userDisplayName: config.userDisplayName?.trim() || '',
   };
   await browser.storage.local.set({ [STORAGE_KEY]: cleaned });
+}
+
+export async function disconnectSpecLoop(): Promise<SpecLoopConfig> {
+  const current = await getSpecLoopConfig();
+  const next: SpecLoopConfig = {
+    baseUrl: current.baseUrl,
+    apiToken: '',
+    defaultTaskId: '',
+    defaultProjectId: '',
+    userEmail: '',
+    userDisplayName: '',
+  };
+  await saveSpecLoopConfig(next);
+  return next;
+}
+
+export async function specLoopApiRequest<T = any>(params: {
+  config: SpecLoopConfig;
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  path: string;
+  body?: any;
+}): Promise<{ ok: boolean; data?: T; error?: string; status?: number }> {
+  const baseUrl = params.config.baseUrl.trim().replace(/\/+$/, '');
+  if (!baseUrl) {
+    return { ok: false, error: '未配置 SpecLoop 服务器地址' };
+  }
+
+  const normalizedPath = params.path.startsWith('/') ? params.path : `/${params.path}`;
+  const url = `${baseUrl}${normalizedPath}`;
+
+  const res: any = await browser.runtime.sendMessage({
+    type: 'SPECLOOP_API_REQUEST',
+    url,
+    method: params.method || 'GET',
+    apiToken: params.config.apiToken,
+    body: params.body,
+  });
+
+  return res || { ok: false, error: '无法连接到后台通信代理' };
+}
+
+/**
+ * Open SpecLoop's passwordless extension handshake page to obtain a scoped PAT without copy-pasting.
+ */
+export async function startSpecLoopAuthHandshake(
+  baseUrl: string
+): Promise<{ ok: boolean; error?: string }> {
+  const cleaned = baseUrl.trim().replace(/\/+$/, '');
+  if (!cleaned) {
+    return { ok: false, error: '请先填写 SpecLoop 服务地址' };
+  }
+  const res: any = await browser.runtime.sendMessage({
+    type: 'OPEN_SPECLOOP_AUTH_TAB',
+    baseUrl: cleaned,
+    version: PAGESPEC_VERSION,
+  });
+  return res || { ok: false, error: '打开授权页失败' };
+}
+
+/**
+ * Verify SpecLoop connection & token health via GET /api/v1/auth/me.
+ */
+export async function verifySpecLoopConnection(config: SpecLoopConfig): Promise<{
+  ok: boolean;
+  email?: string;
+  displayName?: string;
+  error?: string;
+}> {
+  const res = await specLoopApiRequest<{ user?: { email: string; displayName?: string } }>({
+    config,
+    method: 'GET',
+    path: '/api/v1/auth/me',
+  });
+  if (!res.ok) {
+    return { ok: false, error: res.error || '连接校验失败' };
+  }
+  const user = res.data?.user || (res.data as any);
+  return {
+    ok: true,
+    email: user?.email,
+    displayName: user?.displayName || user?.display_name,
+  };
+}
+
+/**
+ * Fetch available projects from SpecLoop.
+ */
+export async function fetchSpecLoopProjects(
+  config: SpecLoopConfig
+): Promise<{ ok: boolean; projects: SpecLoopProjectSummary[]; error?: string }> {
+  const res = await specLoopApiRequest<{ projects?: any[] }>({
+    config,
+    method: 'GET',
+    path: '/api/v1/projects',
+  });
+  if (!res.ok) {
+    return { ok: false, projects: [], error: res.error };
+  }
+  const rawList = Array.isArray(res.data?.projects)
+    ? res.data.projects
+    : Array.isArray(res.data)
+      ? res.data
+      : [];
+  const projects: SpecLoopProjectSummary[] = rawList.map((p: any) => ({
+    id: p.id,
+    slug: p.slug || p.id,
+    name: p.name,
+    workflowMode: p.workflowMode || p.workflow_mode || 'agile',
+    defaultReleaseBranch: p.defaultReleaseBranch || p.default_release_branch || 'release',
+  }));
+  return { ok: true, projects };
+}
+
+/**
+ * Fetch active tasks in SpecLoop for dynamic task picker dropdown.
+ */
+export async function fetchSpecLoopTasks(
+  config: SpecLoopConfig,
+  projectId?: string
+): Promise<{ ok: boolean; tasks: SpecLoopTaskSummary[]; error?: string }> {
+  const qs = new URLSearchParams({ activeOnly: 'true' });
+  const targetProject = projectId || config.defaultProjectId;
+  if (targetProject) {
+    qs.set('projectId', targetProject);
+  }
+  const res = await specLoopApiRequest<{ tasks?: any[] }>({
+    config,
+    method: 'GET',
+    path: `/api/v1/tasks?${qs.toString()}`,
+  });
+  if (!res.ok) {
+    return { ok: false, tasks: [], error: res.error };
+  }
+  const rawList = Array.isArray(res.data?.tasks)
+    ? res.data.tasks
+    : Array.isArray(res.data)
+      ? res.data
+      : [];
+  const tasks: SpecLoopTaskSummary[] = rawList.map((t: any) => ({
+    id: t.id,
+    projectId: t.projectId || t.project_id || '',
+    title: t.title,
+    sanitizedTitle: t.sanitizedTitle || t.sanitized_title || t.title,
+    currentStage: t.currentStage || t.current_stage || 'pm_draft',
+    failedTestCount: t.failedTestCount ?? t.failed_test_count ?? 0,
+    passedTestCount: t.passedTestCount ?? t.passed_test_count ?? 0,
+    totalTestCount: t.totalTestCount ?? t.total_test_count ?? 0,
+    prdSections: Array.isArray(t.prdSections) ? t.prdSections : undefined,
+  }));
+  return { ok: true, tasks };
+}
+
+/**
+ * Fetch Stage 4 QA Test List for a given SpecLoop task.
+ */
+export async function fetchTaskTestItems(
+  config: SpecLoopConfig,
+  taskId: string
+): Promise<{ ok: boolean; items: SpecLoopTestItem[]; error?: string }> {
+  const res = await specLoopApiRequest<{ items?: any[] }>({
+    config,
+    method: 'GET',
+    path: `/api/v1/tasks/${encodeURIComponent(taskId)}/test-items`,
+  });
+  if (!res.ok) {
+    return { ok: false, items: [], error: res.error };
+  }
+  const rawList = Array.isArray(res.data?.items)
+    ? res.data.items
+    : Array.isArray(res.data)
+      ? res.data
+      : [];
+  const items: SpecLoopTestItem[] = rawList.map((i: any) => ({
+    id: i.id,
+    taskId: i.taskId || i.task_id || taskId,
+    category: i.category || '正向主流程',
+    boundSection: i.boundSection || i.bound_section || '',
+    title: i.title,
+    steps: i.steps || '',
+    expectedResult: i.expectedResult || i.expected_result || '',
+    priority: i.priority || 'P1',
+    status: i.status || 'pending',
+    testerNote: i.testerNote || i.tester_note || '',
+    screenshotUrl: i.screenshotUrl || i.screenshot_url || '',
+    pageUrl: i.pageUrl || i.page_url || '',
+    checkedBy: i.checkedBy || i.checked_by || '',
+    checkedAt: i.checkedAt || i.checked_at || '',
+  }));
+  return { ok: true, items };
+}
+
+/**
+ * Update a single Stage 4 QA test item status (with optional auto-captured screenshot + diagnostics).
+ */
+export async function updateTaskTestItemStatus(params: {
+  config: SpecLoopConfig;
+  taskId: string;
+  itemId: string;
+  status: 'passed' | 'failed' | 'pending';
+  testerNote?: string;
+  screenshotBase64?: string;
+  pageUrl?: string;
+  consoleErrors?: QaDiagnosticEntry[];
+}): Promise<{ ok: boolean; item?: SpecLoopTestItem; unlockedRelease?: boolean; error?: string }> {
+  const res = await specLoopApiRequest<any>({
+    config: params.config,
+    method: 'PATCH',
+    path: `/api/v1/tasks/${encodeURIComponent(params.taskId)}/test-items/${encodeURIComponent(params.itemId)}`,
+    body: {
+      status: params.status,
+      testerNote: params.testerNote,
+      screenshotBase64: params.screenshotBase64,
+      pageUrl: params.pageUrl,
+      consoleErrors: params.consoleErrors,
+    },
+  });
+  if (!res.ok) {
+    return { ok: false, error: res.error };
+  }
+  return {
+    ok: true,
+    item: res.data?.item,
+    unlockedRelease: Boolean(res.data?.unlockedRelease),
+  };
 }
 
 export function createSpecBundleManifest(params: {
@@ -123,10 +419,12 @@ export async function pushSpecBundleToSpecLoop(params: {
   diffMarkdown?: string;
   assets: SerializableAsset[];
   taskId?: string;
-}): Promise<{ ok: boolean; taskId?: string; message?: string; error?: string }> {
+  projectId?: string;
+  sectionAnchor?: string;
+}): Promise<{ ok: boolean; taskId?: string; staleTestCount?: number; message?: string; error?: string }> {
   const baseUrl = params.config.baseUrl.trim().replace(/\/+$/, '');
   if (!baseUrl) {
-    return { ok: false, error: '未配置 SpecLoop 服务器地址，请先在「目录配置」中填写' };
+    return { ok: false, error: '未配置 SpecLoop 服务器地址，请先在「目录与配置」中填写' };
   }
 
   const endpoint = `${baseUrl}/api/v1/import/pagespec`;
@@ -135,7 +433,9 @@ export async function pushSpecBundleToSpecLoop(params: {
     endpoint,
     apiToken: params.config.apiToken,
     payload: {
-      taskId: params.taskId || params.config.defaultTaskId || undefined,
+      taskId: params.taskId !== undefined ? params.taskId || undefined : params.config.defaultTaskId || undefined,
+      projectId: params.projectId || params.config.defaultProjectId || undefined,
+      sectionAnchor: params.sectionAnchor || undefined,
       manifest: params.manifest,
       markdown: params.markdown,
       diffMarkdown: params.diffMarkdown || undefined,

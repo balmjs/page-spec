@@ -7,13 +7,44 @@ import { evaluateCurrentFrameContent } from '../core/extractors/frame-scorer';
 import { uint8ArrayToBase64 } from '../utils/dom-helpers';
 import { autoTrimNoisySections } from '../utils/markdown-trimmer';
 
+function queryMainWorldDiagnostics(): Promise<Array<{ kind: string; message: string; timestamp: string }>> {
+  return new Promise((resolve) => {
+    const requestId = `diag_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        window.removeEventListener('message', onMsg);
+        resolve([]);
+      }
+    }, 600);
+
+    const onMsg = (ev: MessageEvent) => {
+      if (
+        ev.source === window &&
+        ev.data?.source === 'PAGESPEC_PAGE' &&
+        ev.data?.type === 'GET_QA_DIAGNOSTICS_RESPONSE' &&
+        ev.data?.requestId === requestId
+      ) {
+        settled = true;
+        clearTimeout(timer);
+        window.removeEventListener('message', onMsg);
+        resolve(Array.isArray(ev.data.errors) ? ev.data.errors : []);
+      }
+    };
+
+    window.addEventListener('message', onMsg);
+    window.postMessage({ source: 'PAGESPEC_CONTENT', type: 'GET_QA_DIAGNOSTICS', requestId }, '*');
+  });
+}
+
 export default defineContentScript({
   matches: ['<all_urls>'],
   allFrames: true,
   matchAboutBlank: true,
   runAt: 'document_idle',
   main() {
-    // 1. Inject Main World script for OpenAPI/Swagger sniffing
+    // 1. Inject Main World script for OpenAPI/Swagger sniffing & QA diagnostic ring buffer
     try {
       const script = document.createElement('script');
       script.src = browser.runtime.getURL('/injected.js');
@@ -21,6 +52,39 @@ export default defineContentScript({
       (document.head || document.documentElement).appendChild(script);
     } catch {
       // ignore script injection failures on restricted domains
+    }
+
+    // 1.5 Listen for SpecLoop one-click browser auth handshake completion on top window
+    if (window === window.top) {
+      window.addEventListener('message', (event) => {
+        if (event.source !== window || !event.data || event.data.source !== 'SPECLOOP_WEBAPP') {
+          return;
+        }
+        if (event.data.type === 'SPECLOOP_EXTENSION_AUTH_GRANTED' && event.data.apiToken) {
+          browser.runtime
+            .sendMessage({
+              type: 'SAVE_SPECLOOP_HANDSHAKE',
+              origin: window.location.origin,
+              baseUrl: event.data.baseUrl || window.location.origin,
+              apiToken: event.data.apiToken,
+              userEmail: event.data.userEmail || '',
+              userDisplayName: event.data.userDisplayName || '',
+              defaultProjectId: event.data.defaultProjectId || '',
+            })
+            .then((res: any) => {
+              window.postMessage(
+                {
+                  source: 'PAGESPEC_EXTENSION',
+                  type: 'SPECLOOP_EXTENSION_AUTH_ACK',
+                  ok: Boolean(res?.ok),
+                  error: res?.error,
+                },
+                window.location.origin
+              );
+            })
+            .catch(() => {});
+        }
+      });
     }
 
     // 2. Listen for requests from Popup / SidePanel / Background
@@ -35,6 +99,28 @@ export default defineContentScript({
           title: document.title,
           isTop: window === window.top,
         });
+        return true;
+      }
+
+      // Collect lightweight QA environment + ring buffer error snapshot
+      if (message.type === 'COLLECT_QA_DIAGNOSTICS') {
+        (async () => {
+          try {
+            const errors = await queryMainWorldDiagnostics();
+            sendResponse({
+              ok: true,
+              data: {
+                url: window.location.href,
+                title: document.title || '',
+                viewport: `${window.innerWidth}x${window.innerHeight}`,
+                userAgent: navigator.userAgent.slice(0, 140),
+                errors,
+              },
+            });
+          } catch (err: any) {
+            sendResponse({ ok: false, error: err?.message || String(err) });
+          }
+        })();
         return true;
       }
 
@@ -96,7 +182,7 @@ export default defineContentScript({
             if (saveMode === 'zip') {
               const zipBlob = buildZipArchive({
                 markdown: result.markdown,
-                markdownFilename: `${result.sanitizedTitle}-design.md`,
+                markdownFilename: `${result.sanitizedTitle}.md`,
                 assets: result.assets,
               });
 

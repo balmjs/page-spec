@@ -7,6 +7,7 @@ import { t } from '../utils/i18n';
 const props = defineProps<{
   diffFilename: string;
   mainFilename: string;
+  relativeDir?: string;
   diffSummary: SpecDiffResult;
 }>();
 
@@ -14,7 +15,10 @@ const copiedDiff = ref(false);
 
 async function copyDiffPrompt() {
   try {
-    await navigator.clipboard.writeText(t('aiPromptDiff')(props.diffFilename, props.mainFilename));
+    const prefix = props.relativeDir || 'specs/prd';
+    await navigator.clipboard.writeText(
+      t('aiPromptDiff')(`${prefix}/${props.diffFilename}`, `${prefix}/${props.mainFilename}`)
+    );
     copiedDiff.value = true;
     setTimeout(() => (copiedDiff.value = false), 2000);
   } catch (err) {

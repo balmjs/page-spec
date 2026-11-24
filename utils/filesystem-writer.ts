@@ -1,6 +1,8 @@
 /**
- * File System Access API helper to save PRD bundles, Design bundles, and API specs
- * directly into local project requirements/ directories with automatic incremental diff detection.
+ * File System Access API helper to save PRD bundles, Design bundles, API specs,
+ * and SpecLoop QA bugfix packs directly into categorized local project folders:
+ *   <project-root>/specs/{prd,design,api,qa}
+ * (auto-creates folders, prevents nested specs/specs, and preserves legacy requirements/ projects)
  */
 
 import { base64ToUint8Array } from './dom-helpers';
@@ -9,6 +11,10 @@ import { computeMarkdownSpecDiff, type SpecDiffResult } from './spec-diff';
 const DB_NAME = 'pagespec_db';
 const STORE_NAME = 'handles';
 const DIR_KEY = 'requirements_directory_handle';
+const ROOT_PREF_STORAGE_KEY = 'pagespec_specs_root_preference';
+
+export type SpecsRootDirPreference = 'auto' | 'specs' | 'requirements';
+export type SpecCategorySubdir = 'prd' | 'design' | 'api' | 'qa';
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -25,6 +31,30 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 /**
+ * Load user preference for specs root folder naming ('auto' | 'specs' | 'requirements').
+ */
+export async function getSpecsRootPreference(): Promise<SpecsRootDirPreference> {
+  try {
+    const stored = await browser.storage.local.get(ROOT_PREF_STORAGE_KEY);
+    const val = stored?.[ROOT_PREF_STORAGE_KEY];
+    if (val === 'specs' || val === 'requirements' || val === 'auto') {
+      return val;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'auto';
+}
+
+export async function saveSpecsRootPreference(pref: SpecsRootDirPreference): Promise<void> {
+  try {
+    await browser.storage.local.set({ [ROOT_PREF_STORAGE_KEY]: pref });
+  } catch {
+    // ignore storage errors
+  }
+}
+
+/**
  * Check if the current browser environment supports the File System Access API.
  */
 export function isFileSystemAccessSupported(): boolean {
@@ -32,7 +62,7 @@ export function isFileSystemAccessSupported(): boolean {
 }
 
 /**
- * Prompt the user to select their local project requirements directory.
+ * Prompt the user to select their local project root folder (or an existing specs/requirements folder).
  */
 export async function pickRequirementsDirectory(): Promise<FileSystemDirectoryHandle> {
   if (!isFileSystemAccessSupported()) {
@@ -119,6 +149,64 @@ export async function removeSavedRequirementsDirectory(): Promise<void> {
   }
 }
 
+async function directoryExists(
+  parentHandle: FileSystemDirectoryHandle,
+  name: string
+): Promise<boolean> {
+  try {
+    await parentHandle.getDirectoryHandle(name, { create: false });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface ResolvedCategoryDirectory {
+  categoryHandle: FileSystemDirectoryHandle;
+  specsRootHandle: FileSystemDirectoryHandle;
+  resolvedRootName: string; // e.g. 'specs' or 'requirements'
+  displayRelativeDir: string; // e.g. 'specs/prd'
+}
+
+/**
+ * Smartly resolve and auto-create <project-root>/{specs|requirements}/{prd|design|api|qa}:
+ * - Anti-nesting guard: if user selected `specs/` or `requirements/` itself, use it directly.
+ * - Legacy compat: when preference='auto', keep existing `requirements/` if `specs/` does not exist.
+ */
+export async function resolveCategoryDirectory(
+  boundHandle: FileSystemDirectoryHandle,
+  category: SpecCategorySubdir,
+  preference: SpecsRootDirPreference = 'auto'
+): Promise<ResolvedCategoryDirectory> {
+  const handleNameLower = boundHandle.name.toLowerCase();
+
+  let specsRootHandle: FileSystemDirectoryHandle;
+  let resolvedRootName: string;
+
+  if (handleNameLower === 'specs' || handleNameLower === 'requirements') {
+    specsRootHandle = boundHandle;
+    resolvedRootName = boundHandle.name;
+  } else {
+    let targetRootName = preference === 'requirements' ? 'requirements' : 'specs';
+    if (preference === 'auto') {
+      const hasSpecs = await directoryExists(boundHandle, 'specs');
+      const hasLegacyReq = !hasSpecs && (await directoryExists(boundHandle, 'requirements'));
+      targetRootName = hasLegacyReq ? 'requirements' : 'specs';
+    }
+    specsRootHandle = await boundHandle.getDirectoryHandle(targetRootName, { create: true });
+    resolvedRootName = targetRootName;
+  }
+
+  const categoryHandle = await specsRootHandle.getDirectoryHandle(category, { create: true });
+
+  return {
+    categoryHandle,
+    specsRootHandle,
+    resolvedRootName,
+    displayRelativeDir: `${resolvedRootName}/${category}`,
+  };
+}
+
 export interface SerializableAsset {
   filename: string; // e.g. "assets/PRD_Title/prototype-001.png"
   base64?: string;
@@ -128,12 +216,16 @@ export interface SerializableAsset {
 export interface DirectoryWriteResult {
   mdFilename: string;
   assetsWritten: number;
+  resolvedRootName: string;
+  displayRelativeDir: string;
+  relativeMdPath: string;
+  relativeDiffPath?: string;
   diffFilename?: string;
   diffSummary?: SpecDiffResult;
 }
 
 /**
- * Try reading an existing text file from the bound directory (returns null if it doesn't exist).
+ * Try reading an existing text file from a directory (returns null if it doesn't exist).
  */
 async function readExistingTextFile(
   dirHandle: FileSystemDirectoryHandle,
@@ -149,7 +241,7 @@ async function readExistingTextFile(
 }
 
 /**
- * Write a text file to the root of dirHandle.
+ * Write a text file to a directory.
  */
 async function writeTextFile(
   dirHandle: FileSystemDirectoryHandle,
@@ -182,7 +274,7 @@ async function getNestedFileHandle(
 }
 
 /**
- * Write binary assets into nested subdirectories.
+ * Write binary assets into nested subdirectories co-located within the category directory.
  */
 async function writeAssetsToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -246,17 +338,25 @@ async function writeMarkdownWithDiff(
 export async function overwriteMarkdownInDirectory(
   dirHandle: FileSystemDirectoryHandle,
   mdFilename: string,
-  markdown: string
+  markdown: string,
+  category?: SpecCategorySubdir,
+  preference?: SpecsRootDirPreference
 ): Promise<void> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
-  await writeTextFile(dirHandle, mdFilename, markdown);
+  if (category) {
+    const pref = preference ?? (await getSpecsRootPreference());
+    const resolved = await resolveCategoryDirectory(dirHandle, category, pref);
+    await writeTextFile(resolved.categoryHandle, mdFilename, markdown);
+  } else {
+    await writeTextFile(dirHandle, mdFilename, markdown);
+  }
 }
 
 /**
- * Write extracted PRD Markdown and assets directly to local project directory.
+ * Write extracted PRD Markdown and co-located assets into <project-root>/{specs|requirements}/prd/.
  */
 export async function writePrdBundleToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -265,29 +365,47 @@ export async function writePrdBundleToDirectory(
     sanitizedTitle: string;
     markdown: string;
     assets: Array<SerializableAsset>;
-  }
+  },
+  preference?: SpecsRootDirPreference
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
+  const pref = preference ?? (await getSpecsRootPreference());
+  const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
+    dirHandle,
+    'prd',
+    pref
+  );
+
   const mdFilename = `${payload.sanitizedTitle}.md`;
   const diffFilename = `${payload.sanitizedTitle}.diff.md`;
   const diffInfo = await writeMarkdownWithDiff(
-    dirHandle,
+    categoryHandle,
     mdFilename,
     diffFilename,
     payload.title || payload.sanitizedTitle,
     payload.markdown
   );
-  const assetsWritten = await writeAssetsToDirectory(dirHandle, payload.assets);
+  const assetsWritten = await writeAssetsToDirectory(categoryHandle, payload.assets);
 
-  return { mdFilename, assetsWritten, ...diffInfo };
+  return {
+    mdFilename,
+    assetsWritten,
+    resolvedRootName,
+    displayRelativeDir,
+    relativeMdPath: `${displayRelativeDir}/${mdFilename}`,
+    relativeDiffPath: diffInfo.diffFilename
+      ? `${displayRelativeDir}/${diffInfo.diffFilename}`
+      : undefined,
+    ...diffInfo,
+  };
 }
 
 /**
- * Write extracted Design Spec Markdown and artboard assets directly to local project directory.
+ * Write extracted Design Spec Markdown and artboard assets into <project-root>/{specs|requirements}/design/.
  */
 export async function writeDesignBundleToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -296,29 +414,47 @@ export async function writeDesignBundleToDirectory(
     sanitizedTitle: string;
     markdown: string;
     assets: Array<SerializableAsset>;
-  }
+  },
+  preference?: SpecsRootDirPreference
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
-  const mdFilename = `${payload.sanitizedTitle}-design.md`;
-  const diffFilename = `${payload.sanitizedTitle}-design.diff.md`;
-  const diffInfo = await writeMarkdownWithDiff(
+  const pref = preference ?? (await getSpecsRootPreference());
+  const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
     dirHandle,
+    'design',
+    pref
+  );
+
+  const mdFilename = `${payload.sanitizedTitle}.md`;
+  const diffFilename = `${payload.sanitizedTitle}.diff.md`;
+  const diffInfo = await writeMarkdownWithDiff(
+    categoryHandle,
     mdFilename,
     diffFilename,
     payload.title || payload.sanitizedTitle,
     payload.markdown
   );
-  const assetsWritten = await writeAssetsToDirectory(dirHandle, payload.assets);
+  const assetsWritten = await writeAssetsToDirectory(categoryHandle, payload.assets);
 
-  return { mdFilename, assetsWritten, ...diffInfo };
+  return {
+    mdFilename,
+    assetsWritten,
+    resolvedRootName,
+    displayRelativeDir,
+    relativeMdPath: `${displayRelativeDir}/${mdFilename}`,
+    relativeDiffPath: diffInfo.diffFilename
+      ? `${displayRelativeDir}/${diffInfo.diffFilename}`
+      : undefined,
+    ...diffInfo,
+  };
 }
 
 /**
- * Write extracted API Spec directly to local project directory.
+ * Write extracted API Spec into <project-root>/{specs|requirements}/api/.
  */
 export async function writeApiSpecToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -326,22 +462,89 @@ export async function writeApiSpecToDirectory(
     title?: string;
     sanitizedTitle: string;
     markdown: string;
-  }
+  },
+  preference?: SpecsRootDirPreference
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
-  const mdFilename = `${payload.sanitizedTitle}-api.md`;
-  const diffFilename = `${payload.sanitizedTitle}-api.diff.md`;
-  const diffInfo = await writeMarkdownWithDiff(
+  const pref = preference ?? (await getSpecsRootPreference());
+  const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
     dirHandle,
+    'api',
+    pref
+  );
+
+  const mdFilename = `${payload.sanitizedTitle}.md`;
+  const diffFilename = `${payload.sanitizedTitle}.diff.md`;
+  const diffInfo = await writeMarkdownWithDiff(
+    categoryHandle,
     mdFilename,
     diffFilename,
     payload.title || payload.sanitizedTitle,
     payload.markdown
   );
 
-  return { mdFilename, assetsWritten: 0, ...diffInfo };
+  return {
+    mdFilename,
+    assetsWritten: 0,
+    resolvedRootName,
+    displayRelativeDir,
+    relativeMdPath: `${displayRelativeDir}/${mdFilename}`,
+    relativeDiffPath: diffInfo.diffFilename
+      ? `${displayRelativeDir}/${diffInfo.diffFilename}`
+      : undefined,
+    ...diffInfo,
+  };
+}
+
+/**
+ * Write QA failure bugfix bundle pulled from SpecLoop into <project-root>/{specs|requirements}/qa/.
+ */
+export async function writeQaFixesBundleToDirectory(
+  dirHandle: FileSystemDirectoryHandle,
+  payload: {
+    title?: string;
+    sanitizedTitle: string;
+    markdown: string;
+    assets: Array<SerializableAsset>;
+  },
+  preference?: SpecsRootDirPreference
+): Promise<DirectoryWriteResult> {
+  const hasPermission = await verifyDirectoryPermission(dirHandle);
+  if (!hasPermission) {
+    throw new Error('未获得对本地目录的读写权限，请重新授权');
+  }
+
+  const pref = preference ?? (await getSpecsRootPreference());
+  const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
+    dirHandle,
+    'qa',
+    pref
+  );
+
+  const mdFilename = `${payload.sanitizedTitle}-bugs.md`;
+  const diffFilename = `${payload.sanitizedTitle}-bugs.diff.md`;
+  const diffInfo = await writeMarkdownWithDiff(
+    categoryHandle,
+    mdFilename,
+    diffFilename,
+    payload.title || payload.sanitizedTitle,
+    payload.markdown
+  );
+  const assetsWritten = await writeAssetsToDirectory(categoryHandle, payload.assets);
+
+  return {
+    mdFilename,
+    assetsWritten,
+    resolvedRootName,
+    displayRelativeDir,
+    relativeMdPath: `${displayRelativeDir}/${mdFilename}`,
+    relativeDiffPath: diffInfo.diffFilename
+      ? `${displayRelativeDir}/${diffInfo.diffFilename}`
+      : undefined,
+    ...diffInfo,
+  };
 }

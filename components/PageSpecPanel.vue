@@ -19,6 +19,9 @@ import {
   Check,
   Languages,
   Link2,
+  Bug,
+  Unlink,
+  CloudDownload,
 } from 'lucide-vue-next';
 import {
   isFileSystemAccessSupported,
@@ -30,7 +33,10 @@ import {
   writeApiSpecToDirectory,
   overwriteMarkdownInDirectory,
   verifyDirectoryPermission,
+  getSpecsRootPreference,
+  saveSpecsRootPreference,
   type SerializableAsset,
+  type SpecsRootDirPreference,
 } from '../utils/filesystem-writer';
 import type { BestFrameResult } from '../entrypoints/background';
 import type { SpecDiffResult } from '../utils/spec-diff';
@@ -39,14 +45,26 @@ import type { DesignArtboardSummary, DesignPlatform } from '../core/extractors/d
 import {
   getSpecLoopConfig,
   saveSpecLoopConfig,
+  disconnectSpecLoop,
+  isSpecLoopConnected,
+  startSpecLoopAuthHandshake,
+  verifySpecLoopConnection,
+  fetchSpecLoopProjects,
+  fetchSpecLoopTasks,
+  pushSpecBundleToSpecLoop,
   createSpecBundleManifest,
   PAGESPEC_VERSION,
   type SpecLoopConfig,
+  type SpecLoopProjectSummary,
+  type SpecLoopTaskSummary,
 } from '../utils/specloop-bridge';
+import { pullTaskFullSpecsToLocal } from '../utils/specloop-puller';
 import { t, currentLocale, toggleLocale, initLocale } from '../utils/i18n';
 import DiffBadgeBox from './DiffBadgeBox.vue';
 import SectionTrimmerBox from './SectionTrimmerBox.vue';
 import SpecLoopActionBar from './SpecLoopActionBar.vue';
+import SpecLoopTaskPicker from './SpecLoopTaskPicker.vue';
+import QaCompanionPanel from './QaCompanionPanel.vue';
 import ApiEndpointSelector from './ApiEndpointSelector.vue';
 import DesignArtboardSelector from './DesignArtboardSelector.vue';
 
@@ -54,7 +72,7 @@ const props = defineProps<{
   isSidepanel?: boolean;
 }>();
 
-type ActiveTab = 'prd' | 'design' | 'api' | 'dir';
+type ActiveTab = 'prd' | 'design' | 'api' | 'qa' | 'dir';
 export type EngineMode = 'auto' | 'tencent' | 'dom';
 
 const currentTab = ref<ActiveTab>('prd');
@@ -73,18 +91,39 @@ const selectedFrameId = ref<number>(0);
 const designFrameId = ref<number>(0);
 const isDetectingFrames = ref(false);
 
-// Local Requirements Directory Handle
+// Local Project Root Directory Handle & Root Strategy
 const savedDirHandle = ref<FileSystemDirectoryHandle | null>(null);
 const dirName = ref<string>('');
 const isFsSupported = ref(isFileSystemAccessSupported());
+const rootPreference = ref<SpecsRootDirPreference>('auto');
 
-// SpecLoop Optional Config
+// SpecLoop Optional Config & Dynamic Data
 const specLoopConfig = ref<SpecLoopConfig>({
   baseUrl: '',
   apiToken: '',
   defaultTaskId: '',
+  defaultProjectId: '',
+  userEmail: '',
+  userDisplayName: '',
 });
 const specLoopSaved = ref(false);
+const specLoopConnError = ref('');
+const specLoopProjects = ref<SpecLoopProjectSummary[]>([]);
+const specLoopTasks = ref<SpecLoopTaskSummary[]>([]);
+const isLoadingSpecLoopTasks = ref(false);
+
+// Opt-in SpecLoop Sync Checkboxes — STRICTLY DEFAULT FALSE (preserving standalone open-source purity!)
+const syncPrdToSpecLoop = ref(false);
+const syncDesignToSpecLoop = ref(false);
+const syncApiToSpecLoop = ref(false);
+const syncTargetTaskId = ref('');
+const syncDesignSectionAnchor = ref('');
+
+// Reverse Pull State (in Settings)
+const pullTaskId = ref('');
+const isPullingSpecs = ref(false);
+const pullSpecsMsg = ref('');
+const pullSpecsPrompt = ref('');
 
 // Copy status
 const copiedPrompt = ref(false);
@@ -115,9 +154,11 @@ const lastPrdResult = ref<{
   warnings: string[];
   markdownPreview: string;
   savedToDirectory?: boolean;
-  directoryName?: string;
+  displayRelativeDir?: string;
+  relativeMdPath?: string;
   diffFilename?: string;
   diffSummary?: SpecDiffResult;
+  specLoopSyncNotice?: string;
 } | null>(null);
 
 // Design Extraction Result
@@ -133,9 +174,11 @@ const lastDesignResult = ref<{
   warnings: string[];
   markdownPreview: string;
   savedToDirectory?: boolean;
-  directoryName?: string;
+  displayRelativeDir?: string;
+  relativeMdPath?: string;
   diffFilename?: string;
   diffSummary?: SpecDiffResult;
+  specLoopSyncNotice?: string;
 } | null>(null);
 
 // API Extraction Result
@@ -148,10 +191,14 @@ const lastApiResult = ref<{
   format: string;
   markdownPreview: string;
   savedToDirectory?: boolean;
-  directoryName?: string;
+  displayRelativeDir?: string;
+  relativeMdPath?: string;
   diffFilename?: string;
   diffSummary?: SpecDiffResult;
+  specLoopSyncNotice?: string;
 } | null>(null);
+
+const specLoopConnected = computed(() => isSpecLoopConnected(specLoopConfig.value));
 
 const activeHost = computed(() => {
   try {
@@ -181,7 +228,7 @@ const designManifest = computed(() => {
     title: lastDesignResult.value.title,
     sanitizedTitle: lastDesignResult.value.sanitizedTitle,
     sourceUrl: pageUrl.value,
-    markdownFile: `${lastDesignResult.value.sanitizedTitle}-design.md`,
+    markdownFile: `${lastDesignResult.value.sanitizedTitle}.md`,
     diffFile: lastDesignResult.value.diffFilename,
     assetsCount: lastDesignResult.value.totalAssets,
     artboardsCount: lastDesignResult.value.artboardsCount,
@@ -196,7 +243,7 @@ const apiManifest = computed(() => {
     title: lastApiResult.value.title,
     sanitizedTitle: lastApiResult.value.sanitizedTitle,
     sourceUrl: pageUrl.value,
-    markdownFile: `${lastApiResult.value.sanitizedTitle}-api.md`,
+    markdownFile: `${lastApiResult.value.sanitizedTitle}.md`,
     diffFile: lastApiResult.value.diffFilename,
     assetsCount: 0,
     endpointsCount: lastApiResult.value.endpointsCount,
@@ -206,6 +253,32 @@ const apiManifest = computed(() => {
 async function getActiveTabId(): Promise<number | undefined> {
   const tabs = await browser.tabs.query({ active: true, currentWindow: true });
   return tabs[0]?.id;
+}
+
+async function refreshSpecLoopWorkspaceData() {
+  if (!specLoopConnected.value) {
+    specLoopProjects.value = [];
+    specLoopTasks.value = [];
+    return;
+  }
+  isLoadingSpecLoopTasks.value = true;
+  try {
+    const [projRes, taskRes] = await Promise.all([
+      fetchSpecLoopProjects(specLoopConfig.value),
+      fetchSpecLoopTasks(specLoopConfig.value),
+    ]);
+    if (projRes.ok) {
+      specLoopProjects.value = projRes.projects;
+    }
+    if (taskRes.ok) {
+      specLoopTasks.value = taskRes.tasks;
+      if (!pullTaskId.value && taskRes.tasks.length > 0) {
+        pullTaskId.value = taskRes.tasks[0]!.id;
+      }
+    }
+  } finally {
+    isLoadingSpecLoopTasks.value = false;
+  }
 }
 
 async function refreshActiveTabContext() {
@@ -245,6 +318,10 @@ function handleRuntimeMessage(msg: any) {
   if (msg?.type === 'EXTRACTION_PROGRESS') {
     progressPercent.value = msg.current;
     progressMessage.value = msg.message;
+  } else if (msg?.type === 'SPECLOOP_CONFIG_UPDATED' && msg.config) {
+    specLoopConfig.value = { ...specLoopConfig.value, ...msg.config };
+    specLoopConnError.value = '';
+    refreshSpecLoopWorkspaceData();
   }
 }
 
@@ -254,7 +331,6 @@ onMounted(async () => {
     pageTitle.value = t('detecting');
   }
 
-  // Load saved preferences
   try {
     const stored = await browser.storage.local.get(['pagespec_engine_mode', 'pagespec_auto_trim_noise']);
     if (stored?.pagespec_engine_mode) {
@@ -267,10 +343,10 @@ onMounted(async () => {
     console.warn('[PageSpec] Failed to load preferences:', err);
   }
 
-  // Load SpecLoop config
+  rootPreference.value = await getSpecsRootPreference();
   specLoopConfig.value = await getSpecLoopConfig();
+  syncTargetTaskId.value = specLoopConfig.value.defaultTaskId || '';
 
-  // Load saved directory handle
   try {
     const handle = await getSavedRequirementsDirectory();
     if (handle) {
@@ -279,6 +355,10 @@ onMounted(async () => {
     }
   } catch (err) {
     console.warn('[PageSpec] Failed to load saved directory handle:', err);
+  }
+
+  if (specLoopConnected.value) {
+    refreshSpecLoopWorkspaceData();
   }
 
   await refreshActiveTabContext();
@@ -314,12 +394,18 @@ watch(autoTrimNoise, (val) => {
   browser.storage.local.set({ pagespec_auto_trim_noise: val });
 });
 
+watch(rootPreference, (val) => {
+  saveSpecsRootPreference(val);
+});
+
 watch(currentTab, async (tab) => {
   extractionError.value = '';
   if (tab === 'design') {
     await scanDesignArtboards();
   } else if (tab === 'api') {
     await scanApiEndpoints();
+  } else if (tab === 'qa' && specLoopConnected.value) {
+    await refreshSpecLoopWorkspaceData();
   }
 });
 
@@ -335,6 +421,17 @@ watch(designFrameId, () => {
   }
 });
 
+watch(specLoopConnected, (isConn) => {
+  if (!isConn && currentTab.value === 'qa') {
+    currentTab.value = 'prd';
+  }
+  if (!isConn) {
+    syncPrdToSpecLoop.value = false;
+    syncDesignToSpecLoop.value = false;
+    syncApiToSpecLoop.value = false;
+  }
+});
+
 async function detectFrames(tabId: number) {
   isDetectingFrames.value = true;
   try {
@@ -345,7 +442,6 @@ async function detectFrames(tabId: number) {
     if (res && res.ok && res.data) {
       bestFrame.value = res.data;
       selectedFrameId.value = res.data.bestFrameId ?? 0;
-      // Design tab always defaults to Top Window (#0) so Lanhu/MasterGo artboards are scanned first
       designFrameId.value = 0;
       if (res.data.bestTitle) {
         pageTitle.value = res.data.bestTitle;
@@ -412,7 +508,6 @@ async function scanApiEndpoints(explicitTabId?: number) {
   }
 }
 
-// Directory Selection & Permission Preflight
 async function ensureTargetDirectoryReady(): Promise<FileSystemDirectoryHandle> {
   if (!isFsSupported.value) {
     throw new Error(t('errFsUnsupported'));
@@ -450,13 +545,80 @@ async function handleClearDirectory() {
   dirName.value = '';
 }
 
-async function handleSaveSpecLoopConfig() {
+async function handleConnectSpecLoop() {
+  specLoopConnError.value = '';
+  const url = specLoopConfig.value.baseUrl.trim();
+  if (!url) {
+    specLoopConnError.value = '请先输入 SpecLoop 服务地址';
+    return;
+  }
   await saveSpecLoopConfig(specLoopConfig.value);
+  const res = await startSpecLoopAuthHandshake(url);
+  if (!res.ok) {
+    specLoopConnError.value = res.error || '无法打开授权页';
+  }
+}
+
+async function handleSaveSpecLoopConfig() {
+  specLoopConnError.value = '';
+  await saveSpecLoopConfig(specLoopConfig.value);
+  if (specLoopConnected.value) {
+    const verify = await verifySpecLoopConnection(specLoopConfig.value);
+    if (verify.ok) {
+      specLoopConfig.value.userEmail = verify.email || specLoopConfig.value.userEmail;
+      specLoopConfig.value.userDisplayName = verify.displayName || specLoopConfig.value.userDisplayName;
+      await saveSpecLoopConfig(specLoopConfig.value);
+      await refreshSpecLoopWorkspaceData();
+    } else {
+      specLoopConnError.value = verify.error || 'Token 校验未通过';
+      return;
+    }
+  }
   specLoopSaved.value = true;
   setTimeout(() => (specLoopSaved.value = false), 2200);
 }
 
-// Copy Helpers
+async function handleDisconnectSpecLoop() {
+  specLoopConfig.value = await disconnectSpecLoop();
+  specLoopProjects.value = [];
+  specLoopTasks.value = [];
+  specLoopConnError.value = '';
+}
+
+async function handlePullFullSpecs() {
+  if (!pullTaskId.value || isPullingSpecs.value) return;
+  pullSpecsMsg.value = '';
+  pullSpecsPrompt.value = '';
+  extractionError.value = '';
+  let targetDir: FileSystemDirectoryHandle;
+  try {
+    targetDir = await ensureTargetDirectoryReady();
+  } catch (err: any) {
+    if (err.name !== 'AbortError') extractionError.value = err?.message || String(err);
+    return;
+  }
+
+  isPullingSpecs.value = true;
+  try {
+    const res = await pullTaskFullSpecsToLocal({
+      dirHandle: targetDir,
+      config: specLoopConfig.value,
+      taskId: pullTaskId.value,
+      preference: rootPreference.value,
+    });
+    if (!res.ok) {
+      extractionError.value = res.error || '同步失败';
+    } else {
+      pullSpecsMsg.value = t('pullSpecsSuccess')(res.writtenPaths.length, res.resolvedRootName || 'specs');
+      pullSpecsPrompt.value = res.prompt || '';
+    }
+  } catch (err: any) {
+    extractionError.value = err?.message || String(err);
+  } finally {
+    isPullingSpecs.value = false;
+  }
+}
+
 async function copyToClipboard(text: string, type: 'prompt' | 'markdown') {
   try {
     await navigator.clipboard.writeText(text);
@@ -472,7 +634,6 @@ async function copyToClipboard(text: string, type: 'prompt' | 'markdown') {
   }
 }
 
-// Apply interactive section trim & optionally overwrite local file
 async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: string) {
   try {
     extractionError.value = '';
@@ -483,7 +644,9 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
         await overwriteMarkdownInDirectory(
           savedDirHandle.value,
           `${lastPrdResult.value.sanitizedTitle}.md`,
-          trimmedMarkdown
+          trimmedMarkdown,
+          'prd',
+          rootPreference.value
         );
       } else {
         await navigator.clipboard.writeText(trimmedMarkdown);
@@ -494,8 +657,10 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
       if (lastDesignResult.value.savedToDirectory && savedDirHandle.value) {
         await overwriteMarkdownInDirectory(
           savedDirHandle.value,
-          `${lastDesignResult.value.sanitizedTitle}-design.md`,
-          trimmedMarkdown
+          `${lastDesignResult.value.sanitizedTitle}.md`,
+          trimmedMarkdown,
+          'design',
+          rootPreference.value
         );
       } else {
         await navigator.clipboard.writeText(trimmedMarkdown);
@@ -506,8 +671,10 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
       if (lastApiResult.value.savedToDirectory && savedDirHandle.value) {
         await overwriteMarkdownInDirectory(
           savedDirHandle.value,
-          `${lastApiResult.value.sanitizedTitle}-api.md`,
-          trimmedMarkdown
+          `${lastApiResult.value.sanitizedTitle}.md`,
+          trimmedMarkdown,
+          'api',
+          rootPreference.value
         );
       } else {
         await navigator.clipboard.writeText(trimmedMarkdown);
@@ -518,7 +685,7 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
   }
 }
 
-// Mode 1: PRD Extraction
+// Mode 1: PRD Extraction (with opt-in SpecLoop sync if user explicitly checked it)
 async function handleExtractPrd(mode: 'directory' | 'zip') {
   if (isExtracting.value) return;
   extractionError.value = '';
@@ -561,43 +728,74 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
     }
 
     const rawRes = res.bundle || res.data?.bundle || res;
+    let displayRelativeDir = 'specs/prd';
+    let relativeMdPath = `specs/prd/${rawRes.sanitizedTitle}.md`;
+    let diffFilename: string | undefined;
+    let diffSummary: SpecDiffResult | undefined;
+
     if (mode === 'directory' && targetDir) {
       progressMessage.value = t('writingFiles');
-      const writeRes = await writePrdBundleToDirectory(targetDir, {
-        title: rawRes.title,
-        sanitizedTitle: rawRes.sanitizedTitle,
-        markdown: rawRes.markdown,
-        assets: rawRes.assets || [],
-      });
-      lastPrdResult.value = {
-        title: rawRes.title,
-        sanitizedTitle: rawRes.sanitizedTitle,
-        rawMarkdown: rawRes.rawMarkdown || rawRes.markdown,
-        markdown: rawRes.markdown,
-        assets: rawRes.assets || [],
-        totalAssets: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
-        trimmedHeadings: rawRes.trimmedHeadings || [],
-        warnings: rawRes.warnings || [],
-        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 3000) : ''),
-        savedToDirectory: true,
-        directoryName: targetDir.name,
-        diffFilename: writeRes.diffFilename,
-        diffSummary: writeRes.diffSummary,
-      };
-    } else {
-      lastPrdResult.value = {
-        title: rawRes.title,
-        sanitizedTitle: rawRes.sanitizedTitle,
-        rawMarkdown: rawRes.rawMarkdown || rawRes.markdown,
-        markdown: rawRes.markdown,
-        assets: rawRes.assets || [],
-        totalAssets: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
-        trimmedHeadings: rawRes.trimmedHeadings || [],
-        warnings: rawRes.warnings || [],
-        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 3000) : ''),
-        savedToDirectory: false,
-      };
+      const writeRes = await writePrdBundleToDirectory(
+        targetDir,
+        {
+          title: rawRes.title,
+          sanitizedTitle: rawRes.sanitizedTitle,
+          markdown: rawRes.markdown,
+          assets: rawRes.assets || [],
+        },
+        rootPreference.value
+      );
+      displayRelativeDir = writeRes.displayRelativeDir;
+      relativeMdPath = writeRes.relativeMdPath;
+      diffFilename = writeRes.diffFilename;
+      diffSummary = writeRes.diffSummary;
     }
+
+    let specLoopSyncNotice = '';
+    if (syncPrdToSpecLoop.value && specLoopConnected.value) {
+      progressMessage.value = t('pushingToSpecLoop');
+      const manifest = createSpecBundleManifest({
+        type: 'prd',
+        title: rawRes.title,
+        sanitizedTitle: rawRes.sanitizedTitle,
+        sourceUrl: pageUrl.value,
+        markdownFile: `${rawRes.sanitizedTitle}.md`,
+        diffFile: diffFilename,
+        assetsCount: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
+      });
+      const pushRes = await pushSpecBundleToSpecLoop({
+        config: specLoopConfig.value,
+        manifest,
+        markdown: rawRes.markdown,
+        diffMarkdown: diffSummary?.diffMarkdown,
+        assets: rawRes.assets || [],
+        taskId: syncTargetTaskId.value,
+      });
+      if (pushRes.ok) {
+        specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
+        refreshSpecLoopWorkspaceData();
+      } else {
+        extractionError.value = `本地已保存，但同步 SpecLoop 失败: ${pushRes.error}`;
+      }
+    }
+
+    lastPrdResult.value = {
+      title: rawRes.title,
+      sanitizedTitle: rawRes.sanitizedTitle,
+      rawMarkdown: rawRes.rawMarkdown || rawRes.markdown,
+      markdown: rawRes.markdown,
+      assets: rawRes.assets || [],
+      totalAssets: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
+      trimmedHeadings: rawRes.trimmedHeadings || [],
+      warnings: rawRes.warnings || [],
+      markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 3000) : ''),
+      savedToDirectory: mode === 'directory' && Boolean(targetDir),
+      displayRelativeDir,
+      relativeMdPath,
+      diffFilename,
+      diffSummary,
+      specLoopSyncNotice,
+    };
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       extractionError.value = err?.message || String(err);
@@ -651,45 +849,78 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
       throw new Error(res?.error || t('errExtractFailed'));
     }
 
+    let displayRelativeDir = 'specs/design';
+    let relativeMdPath = `specs/design/${res.sanitizedTitle}.md`;
+    let diffFilename: string | undefined;
+    let diffSummary: SpecDiffResult | undefined;
+
     if (mode === 'directory' && targetDir) {
       progressMessage.value = t('writingFiles');
-      const writeRes = await writeDesignBundleToDirectory(targetDir, {
-        title: res.title,
-        sanitizedTitle: res.sanitizedTitle,
-        markdown: res.markdown,
-        assets: res.assets || [],
-      });
-      lastDesignResult.value = {
-        title: res.title,
-        sanitizedTitle: res.sanitizedTitle,
-        platform: res.platform,
-        rawMarkdown: res.markdown,
-        markdown: res.markdown,
-        assets: res.assets || [],
-        totalAssets: res.totalAssets ?? 0,
-        artboardsCount: res.artboardsCount ?? 0,
-        warnings: res.warnings || [],
-        markdownPreview: res.markdownPreview || res.markdown.slice(0, 3000),
-        savedToDirectory: true,
-        directoryName: targetDir.name,
-        diffFilename: writeRes.diffFilename,
-        diffSummary: writeRes.diffSummary,
-      };
-    } else {
-      lastDesignResult.value = {
-        title: res.title,
-        sanitizedTitle: res.sanitizedTitle,
-        platform: res.platform,
-        rawMarkdown: res.markdown,
-        markdown: res.markdown,
-        assets: res.assets || [],
-        totalAssets: res.totalAssets ?? 0,
-        artboardsCount: res.artboardsCount ?? 0,
-        warnings: res.warnings || [],
-        markdownPreview: res.markdownPreview || res.markdown.slice(0, 3000),
-        savedToDirectory: false,
-      };
+      const writeRes = await writeDesignBundleToDirectory(
+        targetDir,
+        {
+          title: res.title,
+          sanitizedTitle: res.sanitizedTitle,
+          markdown: res.markdown,
+          assets: res.assets || [],
+        },
+        rootPreference.value
+      );
+      displayRelativeDir = writeRes.displayRelativeDir;
+      relativeMdPath = writeRes.relativeMdPath;
+      diffFilename = writeRes.diffFilename;
+      diffSummary = writeRes.diffSummary;
     }
+
+    let specLoopSyncNotice = '';
+    if (syncDesignToSpecLoop.value && specLoopConnected.value) {
+      progressMessage.value = t('pushingToSpecLoop');
+      const manifest = createSpecBundleManifest({
+        type: 'design',
+        title: res.title,
+        sanitizedTitle: res.sanitizedTitle,
+        sourceUrl: pageUrl.value,
+        markdownFile: `${res.sanitizedTitle}.md`,
+        diffFile: diffFilename,
+        assetsCount: res.totalAssets ?? 0,
+        artboardsCount: res.artboardsCount ?? 0,
+        platform: res.platform,
+      });
+      const pushRes = await pushSpecBundleToSpecLoop({
+        config: specLoopConfig.value,
+        manifest,
+        markdown: res.markdown,
+        diffMarkdown: diffSummary?.diffMarkdown,
+        assets: res.assets || [],
+        taskId: syncTargetTaskId.value,
+        sectionAnchor: syncDesignSectionAnchor.value || undefined,
+      });
+      if (pushRes.ok) {
+        specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
+        refreshSpecLoopWorkspaceData();
+      } else {
+        extractionError.value = `本地已保存，但同步 SpecLoop 失败: ${pushRes.error}`;
+      }
+    }
+
+    lastDesignResult.value = {
+      title: res.title,
+      sanitizedTitle: res.sanitizedTitle,
+      platform: res.platform,
+      rawMarkdown: res.markdown,
+      markdown: res.markdown,
+      assets: res.assets || [],
+      totalAssets: res.totalAssets ?? 0,
+      artboardsCount: res.artboardsCount ?? 0,
+      warnings: res.warnings || [],
+      markdownPreview: res.markdownPreview || res.markdown.slice(0, 3000),
+      savedToDirectory: mode === 'directory' && Boolean(targetDir),
+      displayRelativeDir,
+      relativeMdPath,
+      diffFilename,
+      diffSummary,
+      specLoopSyncNotice,
+    };
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       extractionError.value = err?.message || String(err);
@@ -748,38 +979,72 @@ async function handleExtractApi(mode: 'directory' | 'download') {
     }
 
     const rawRes = res.spec || res.data?.spec || res;
+    let displayRelativeDir = 'specs/api';
+    let relativeMdPath = `specs/api/${rawRes.sanitizedTitle}.md`;
+    let diffFilename: string | undefined;
+    let diffSummary: SpecDiffResult | undefined;
+
     if (mode === 'directory' && targetDir) {
       progressMessage.value = t('writingFiles');
-      const writeRes = await writeApiSpecToDirectory(targetDir, {
-        title: rawRes.title,
-        sanitizedTitle: rawRes.sanitizedTitle,
-        markdown: rawRes.markdown,
-      });
-      lastApiResult.value = {
-        title: rawRes.title,
-        sanitizedTitle: rawRes.sanitizedTitle,
-        rawMarkdown: rawRes.markdown,
-        markdown: rawRes.markdown,
-        endpointsCount: rawRes.endpointsCount,
-        format: rawRes.format,
-        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 3000) : ''),
-        savedToDirectory: true,
-        directoryName: targetDir.name,
-        diffFilename: writeRes.diffFilename,
-        diffSummary: writeRes.diffSummary,
-      };
-    } else {
-      lastApiResult.value = {
-        title: rawRes.title,
-        sanitizedTitle: rawRes.sanitizedTitle,
-        rawMarkdown: rawRes.markdown,
-        markdown: rawRes.markdown,
-        endpointsCount: rawRes.endpointsCount,
-        format: rawRes.format,
-        markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 3000) : ''),
-        savedToDirectory: false,
-      };
+      const writeRes = await writeApiSpecToDirectory(
+        targetDir,
+        {
+          title: rawRes.title,
+          sanitizedTitle: rawRes.sanitizedTitle,
+          markdown: rawRes.markdown,
+        },
+        rootPreference.value
+      );
+      displayRelativeDir = writeRes.displayRelativeDir;
+      relativeMdPath = writeRes.relativeMdPath;
+      diffFilename = writeRes.diffFilename;
+      diffSummary = writeRes.diffSummary;
     }
+
+    let specLoopSyncNotice = '';
+    if (syncApiToSpecLoop.value && specLoopConnected.value) {
+      progressMessage.value = t('pushingToSpecLoop');
+      const manifest = createSpecBundleManifest({
+        type: 'api',
+        title: rawRes.title,
+        sanitizedTitle: rawRes.sanitizedTitle,
+        sourceUrl: pageUrl.value,
+        markdownFile: `${rawRes.sanitizedTitle}.md`,
+        diffFile: diffFilename,
+        assetsCount: 0,
+        endpointsCount: rawRes.endpointsCount,
+      });
+      const pushRes = await pushSpecBundleToSpecLoop({
+        config: specLoopConfig.value,
+        manifest,
+        markdown: rawRes.markdown,
+        diffMarkdown: diffSummary?.diffMarkdown,
+        assets: [],
+        taskId: syncTargetTaskId.value,
+      });
+      if (pushRes.ok) {
+        specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
+        refreshSpecLoopWorkspaceData();
+      } else {
+        extractionError.value = `本地已保存，但同步 SpecLoop 失败: ${pushRes.error}`;
+      }
+    }
+
+    lastApiResult.value = {
+      title: rawRes.title,
+      sanitizedTitle: rawRes.sanitizedTitle,
+      rawMarkdown: rawRes.markdown,
+      markdown: rawRes.markdown,
+      endpointsCount: rawRes.endpointsCount,
+      format: rawRes.format,
+      markdownPreview: rawRes.markdownPreview || (rawRes.markdown ? rawRes.markdown.slice(0, 3000) : ''),
+      savedToDirectory: mode === 'directory' && Boolean(targetDir),
+      displayRelativeDir,
+      relativeMdPath,
+      diffFilename,
+      diffSummary,
+      specLoopSyncNotice,
+    };
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       extractionError.value = err?.message || String(err);
@@ -863,7 +1128,7 @@ function openSidePanel() {
       </button>
     </div>
 
-    <!-- Navigation Tabs (4 Tabs: PRD | Design | API | Settings) -->
+    <!-- Navigation Tabs (QA Tab is strictly invisible unless SpecLoop is connected) -->
     <nav class="flex border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850 px-2 pt-2">
       <button
         @click="currentTab = 'prd'"
@@ -893,6 +1158,16 @@ function openSidePanel() {
       </button>
 
       <button
+        v-if="specLoopConnected"
+        @click="currentTab = 'qa'"
+        class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
+        :class="currentTab === 'qa' ? 'border-emerald-600 text-emerald-600 dark:text-emerald-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
+      >
+        <Bug class="w-3.5 h-3.5" />
+        <span>{{ t('qaTab') }}</span>
+      </button>
+
+      <button
         @click="currentTab = 'dir'"
         class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
         :class="currentTab === 'dir' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
@@ -904,13 +1179,11 @@ function openSidePanel() {
 
     <!-- Main Content Area -->
     <main class="flex-1 p-4 overflow-y-auto">
-      <!-- Error Alert -->
       <div v-if="extractionError" class="mb-3 p-3 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-700 dark:text-red-400 text-xs flex items-start space-x-2">
         <AlertCircle class="w-4 h-4 flex-shrink-0 mt-0.5" />
         <div class="flex-1">{{ extractionError }}</div>
       </div>
 
-      <!-- Extraction Progress Bar -->
       <div v-if="isExtracting" class="mb-4 p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm">
         <div class="flex items-center justify-between text-xs font-medium mb-1.5">
           <span class="text-indigo-600 dark:text-indigo-400 flex items-center space-x-1.5">
@@ -1006,6 +1279,26 @@ function openSidePanel() {
               <span>{{ isExtracting ? t('processing') : t('btnWriteDir')(dirName) }}</span>
             </button>
 
+            <!-- Opt-in SpecLoop Sync Checkbox (ONLY visible when connected, STRICTLY unchecked by default) -->
+            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
+              <label class="flex items-center space-x-2 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium cursor-pointer">
+                <input
+                  type="checkbox"
+                  v-model="syncPrdToSpecLoop"
+                  class="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <span>{{ t('syncToSpecLoopCheckbox') }}</span>
+              </label>
+              <SpecLoopTaskPicker
+                v-if="syncPrdToSpecLoop"
+                v-model="syncTargetTaskId"
+                :tasks="specLoopTasks"
+                :loading="isLoadingSpecLoopTasks"
+                :current-title="pageTitle"
+                @refresh="refreshSpecLoopWorkspaceData()"
+              />
+            </div>
+
             <button
               @click="handleExtractPrd('zip')"
               :disabled="isExtracting"
@@ -1020,8 +1313,12 @@ function openSidePanel() {
         <!-- PRD Result Card -->
         <div v-if="lastPrdResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm space-y-3">
           <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
-            <CheckCircle2 class="w-4 h-4" />
-            <span>{{ lastPrdResult.savedToDirectory ? t('successWrite')(lastPrdResult.directoryName || '') : t('successDownload') }}</span>
+            <CheckCircle2 class="w-4 h-4 flex-shrink-0" />
+            <span class="truncate">{{ lastPrdResult.savedToDirectory ? t('successWrite')(lastPrdResult.relativeMdPath || '') : t('successDownload') }}</span>
+          </div>
+
+          <div v-if="lastPrdResult.specLoopSyncNotice" class="px-2 py-1 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[11px] font-medium">
+            ✓ {{ lastPrdResult.specLoopSyncNotice }}
           </div>
 
           <div class="text-xs text-slate-600 dark:text-slate-300 space-y-1">
@@ -1035,8 +1332,8 @@ function openSidePanel() {
             </div>
             <div class="flex justify-between">
               <span class="text-slate-400">{{ t('isolatedPath') }}</span>
-              <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px]">
-                assets/{{ lastPrdResult.sanitizedTitle }}/
+              <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px] truncate max-w-[210px]">
+                {{ lastPrdResult.displayRelativeDir || 'specs/prd' }}/
               </span>
             </div>
           </div>
@@ -1052,6 +1349,7 @@ function openSidePanel() {
             v-if="lastPrdResult.diffFilename && lastPrdResult.diffSummary?.hasChanges"
             :diff-filename="lastPrdResult.diffFilename"
             :main-filename="`${lastPrdResult.sanitizedTitle}.md`"
+            :relative-dir="lastPrdResult.displayRelativeDir"
             :diff-summary="lastPrdResult.diffSummary"
           />
 
@@ -1067,7 +1365,7 @@ function openSidePanel() {
 
           <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
             <button
-              @click="copyToClipboard(t('aiPromptPrd')(lastPrdResult.sanitizedTitle), 'prompt')"
+              @click="copyToClipboard(t('aiPromptPrd')(lastPrdResult.relativeMdPath || `specs/prd/${lastPrdResult.sanitizedTitle}.md`, lastPrdResult.sanitizedTitle), 'prompt')"
               class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer"
             >
               <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
@@ -1099,7 +1397,10 @@ function openSidePanel() {
             :diff-markdown="lastPrdResult.diffSummary?.diffMarkdown"
             :assets="lastPrdResult.assets"
             :spec-loop-config="specLoopConfig"
+            :tasks="specLoopTasks"
+            :loading-tasks="isLoadingSpecLoopTasks"
             @open-settings="currentTab = 'dir'"
+            @refresh-tasks="refreshSpecLoopWorkspaceData()"
           />
 
           <details class="text-xs pt-1">
@@ -1158,6 +1459,28 @@ function openSidePanel() {
               <span>{{ isExtracting ? t('processing') : t('btnWriteDesignDir')(dirName) }}</span>
             </button>
 
+            <!-- Opt-in SpecLoop Sync Checkbox (ONLY visible when connected, STRICTLY unchecked by default) -->
+            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
+              <label class="flex items-center space-x-2 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium cursor-pointer">
+                <input
+                  type="checkbox"
+                  v-model="syncDesignToSpecLoop"
+                  class="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <span>{{ t('syncToSpecLoopCheckbox') }}</span>
+              </label>
+              <SpecLoopTaskPicker
+                v-if="syncDesignToSpecLoop"
+                v-model="syncTargetTaskId"
+                v-model:section-anchor="syncDesignSectionAnchor"
+                :tasks="specLoopTasks"
+                :loading="isLoadingSpecLoopTasks"
+                :current-title="pageTitle"
+                :show-section-anchor="true"
+                @refresh="refreshSpecLoopWorkspaceData()"
+              />
+            </div>
+
             <button
               @click="handleExtractDesign('zip')"
               :disabled="isExtracting || designArtboards.length === 0"
@@ -1172,8 +1495,12 @@ function openSidePanel() {
         <!-- Design Result Card -->
         <div v-if="lastDesignResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm space-y-3">
           <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
-            <CheckCircle2 class="w-4 h-4" />
-            <span>{{ lastDesignResult.savedToDirectory ? t('successDesignWrite')(lastDesignResult.directoryName || '') : t('successDesignDownload') }}</span>
+            <CheckCircle2 class="w-4 h-4 flex-shrink-0" />
+            <span class="truncate">{{ lastDesignResult.savedToDirectory ? t('successDesignWrite')(lastDesignResult.relativeMdPath || '') : t('successDesignDownload') }}</span>
+          </div>
+
+          <div v-if="lastDesignResult.specLoopSyncNotice" class="px-2 py-1 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[11px] font-medium">
+            ✓ {{ lastDesignResult.specLoopSyncNotice }}
           </div>
 
           <div class="text-xs text-slate-600 dark:text-slate-300 space-y-1">
@@ -1183,8 +1510,8 @@ function openSidePanel() {
             </div>
             <div class="flex justify-between">
               <span class="text-slate-400">{{ t('isolatedPath') }}</span>
-              <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px]">
-                assets/{{ lastDesignResult.sanitizedTitle }}/
+              <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px] truncate max-w-[210px]">
+                {{ lastDesignResult.displayRelativeDir || 'specs/design' }}/
               </span>
             </div>
           </div>
@@ -1192,7 +1519,8 @@ function openSidePanel() {
           <DiffBadgeBox
             v-if="lastDesignResult.diffFilename && lastDesignResult.diffSummary?.hasChanges"
             :diff-filename="lastDesignResult.diffFilename"
-            :main-filename="`${lastDesignResult.sanitizedTitle}-design.md`"
+            :main-filename="`${lastDesignResult.sanitizedTitle}.md`"
+            :relative-dir="lastDesignResult.displayRelativeDir"
             :diff-summary="lastDesignResult.diffSummary"
           />
 
@@ -1208,7 +1536,7 @@ function openSidePanel() {
 
           <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
             <button
-              @click="copyToClipboard(t('aiPromptDesign')(lastDesignResult.sanitizedTitle), 'prompt')"
+              @click="copyToClipboard(t('aiPromptDesign')(lastDesignResult.relativeMdPath || `specs/design/${lastDesignResult.sanitizedTitle}.md`, lastDesignResult.sanitizedTitle), 'prompt')"
               class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer"
             >
               <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
@@ -1239,7 +1567,10 @@ function openSidePanel() {
             :diff-markdown="lastDesignResult.diffSummary?.diffMarkdown"
             :assets="lastDesignResult.assets"
             :spec-loop-config="specLoopConfig"
+            :tasks="specLoopTasks"
+            :loading-tasks="isLoadingSpecLoopTasks"
             @open-settings="currentTab = 'dir'"
+            @refresh-tasks="refreshSpecLoopWorkspaceData()"
           />
 
           <details class="text-xs pt-1">
@@ -1302,6 +1633,26 @@ function openSidePanel() {
               <span>{{ isExtracting ? t('processing') : t('btnWriteApiDir')(dirName) }}</span>
             </button>
 
+            <!-- Opt-in SpecLoop Sync Checkbox (ONLY visible when connected, STRICTLY unchecked by default) -->
+            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
+              <label class="flex items-center space-x-2 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium cursor-pointer">
+                <input
+                  type="checkbox"
+                  v-model="syncApiToSpecLoop"
+                  class="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <span>{{ t('syncToSpecLoopCheckbox') }}</span>
+              </label>
+              <SpecLoopTaskPicker
+                v-if="syncApiToSpecLoop"
+                v-model="syncTargetTaskId"
+                :tasks="specLoopTasks"
+                :loading="isLoadingSpecLoopTasks"
+                :current-title="pageTitle"
+                @refresh="refreshSpecLoopWorkspaceData()"
+              />
+            </div>
+
             <button
               @click="handleExtractApi('download')"
               :disabled="isExtracting"
@@ -1316,8 +1667,12 @@ function openSidePanel() {
         <!-- API Result Card -->
         <div v-if="lastApiResult" class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-emerald-200 dark:border-emerald-800/60 shadow-sm space-y-3">
           <div class="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
-            <CheckCircle2 class="w-4 h-4" />
-            <span>{{ lastApiResult.savedToDirectory ? t('successApiWrite')(lastApiResult.directoryName || '') : t('successApiDownload') }}</span>
+            <CheckCircle2 class="w-4 h-4 flex-shrink-0" />
+            <span class="truncate">{{ lastApiResult.savedToDirectory ? t('successApiWrite')(lastApiResult.relativeMdPath || '') : t('successApiDownload') }}</span>
+          </div>
+
+          <div v-if="lastApiResult.specLoopSyncNotice" class="px-2 py-1 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[11px] font-medium">
+            ✓ {{ lastApiResult.specLoopSyncNotice }}
           </div>
 
           <div class="text-xs text-slate-600 dark:text-slate-300 space-y-1">
@@ -1336,13 +1691,14 @@ function openSidePanel() {
           <DiffBadgeBox
             v-if="lastApiResult.diffFilename && lastApiResult.diffSummary?.hasChanges"
             :diff-filename="lastApiResult.diffFilename"
-            :main-filename="`${lastApiResult.sanitizedTitle}-api.md`"
+            :main-filename="`${lastApiResult.sanitizedTitle}.md`"
+            :relative-dir="lastApiResult.displayRelativeDir"
             :diff-summary="lastApiResult.diffSummary"
           />
 
           <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
             <button
-              @click="copyToClipboard(t('aiPromptApi')(lastApiResult.sanitizedTitle), 'prompt')"
+              @click="copyToClipboard(t('aiPromptApi')(lastApiResult.relativeMdPath || `specs/api/${lastApiResult.sanitizedTitle}.md`), 'prompt')"
               class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer"
             >
               <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
@@ -1373,7 +1729,10 @@ function openSidePanel() {
             :diff-markdown="lastApiResult.diffSummary?.diffMarkdown"
             :assets="[]"
             :spec-loop-config="specLoopConfig"
+            :tasks="specLoopTasks"
+            :loading-tasks="isLoadingSpecLoopTasks"
             @open-settings="currentTab = 'dir'"
+            @refresh-tasks="refreshSpecLoopWorkspaceData()"
           />
 
           <details class="text-xs pt-1">
@@ -1383,6 +1742,18 @@ function openSidePanel() {
             <pre class="mt-1 p-2 rounded bg-slate-100 dark:bg-slate-900 font-mono text-[10px] max-h-40 overflow-y-auto whitespace-pre-wrap text-slate-700 dark:text-slate-300">{{ lastApiResult.markdownPreview }}</pre>
           </details>
         </div>
+      </section>
+
+      <!-- ==================== TAB 3.5: LIVE QA COMPANION (CONDITIONAL) ==================== -->
+      <section v-if="currentTab === 'qa' && specLoopConnected">
+        <QaCompanionPanel
+          :spec-loop-config="specLoopConfig"
+          :tasks="specLoopTasks"
+          :saved-dir-handle="savedDirHandle"
+          :root-preference="rootPreference"
+          @refresh-tasks="refreshSpecLoopWorkspaceData()"
+          @open-settings="currentTab = 'dir'"
+        />
       </section>
 
       <!-- ==================== TAB 4: DIRECTORY & SPECLOOP SETTINGS ==================== -->
@@ -1413,6 +1784,20 @@ function openSidePanel() {
             </div>
           </div>
 
+          <div class="text-xs">
+            <label class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+              {{ t('rootFolderPrefLabel') }}
+            </label>
+            <select
+              v-model="rootPreference"
+              class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
+            >
+              <option value="auto">{{ t('rootPrefAuto') }}</option>
+              <option value="specs">{{ t('rootPrefSpecs') }}</option>
+              <option value="requirements">{{ t('rootPrefRequirements') }}</option>
+            </select>
+          </div>
+
           <div class="flex space-x-2 pt-1">
             <button
               @click="handleSelectDirectory"
@@ -1434,15 +1819,27 @@ function openSidePanel() {
 
         <!-- Optional SpecLoop Bridge Settings -->
         <div class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
-          <div class="flex items-center space-x-2">
-            <Link2 class="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <h2 class="text-xs font-bold text-slate-900 dark:text-white">{{ t('specLoopSectionTitle') }}</h2>
+          <div class="flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+              <Link2 class="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <h2 class="text-xs font-bold text-slate-900 dark:text-white">{{ t('specLoopSectionTitle') }}</h2>
+            </div>
+            <span
+              v-if="specLoopConnected"
+              class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800"
+            >
+              Online
+            </span>
           </div>
           <p class="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
             {{ t('specLoopSectionDesc') }}
           </p>
 
-          <div class="space-y-2 text-xs">
+          <div v-if="specLoopConnError" class="p-2 rounded bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 text-[11px]">
+            {{ specLoopConnError }}
+          </div>
+
+          <div class="space-y-2.5 text-xs">
             <div>
               <label class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
                 {{ t('specLoopUrlLabel') }}
@@ -1451,42 +1848,110 @@ function openSidePanel() {
                 v-model="specLoopConfig.baseUrl"
                 type="url"
                 :placeholder="t('specLoopUrlPlaceholder')"
-                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               />
             </div>
 
-            <div>
-              <label class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                {{ t('specLoopTokenLabel') }}
-              </label>
-              <input
-                v-model="specLoopConfig.apiToken"
-                type="password"
-                :placeholder="t('specLoopTokenPlaceholder')"
-                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div>
-              <label class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-                {{ t('specLoopTaskIdLabel') }}
-              </label>
-              <input
-                v-model="specLoopConfig.defaultTaskId"
-                type="text"
-                :placeholder="t('specLoopTaskIdPlaceholder')"
-                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              />
+            <!-- Connected Account Status -->
+            <div v-if="specLoopConnected" class="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
+              <div class="text-[11px] text-emerald-800 dark:text-emerald-300 font-medium truncate">
+                {{ t('specLoopConnectedAs')(specLoopConfig.userEmail || 'PAT Authorized') }}
+              </div>
+              <button
+                type="button"
+                @click="handleDisconnectSpecLoop"
+                class="inline-flex items-center space-x-1 text-[10px] font-semibold text-red-600 dark:text-red-400 hover:underline flex-shrink-0 ml-2 cursor-pointer"
+              >
+                <Unlink class="w-3 h-3" />
+                <span>{{ t('specLoopDisconnectBtn') }}</span>
+              </button>
             </div>
 
             <button
+              v-else
               type="button"
-              @click="handleSaveSpecLoopConfig"
-              class="w-full py-2 px-3 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+              @click="handleConnectSpecLoop"
+              class="w-full py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 shadow transition cursor-pointer"
             >
-              <Check v-if="specLoopSaved" class="w-3.5 h-3.5 text-emerald-300" />
-              <span>{{ specLoopSaved ? t('specLoopSavedNotice') : t('saveSpecLoopBtn') }}</span>
+              <Link2 class="w-3.5 h-3.5" />
+              <span>{{ t('specLoopConnectBtn') }}</span>
             </button>
+
+            <div v-if="specLoopConnected && specLoopProjects.length > 0">
+              <label class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
+                {{ t('specLoopProjectLabel') }}
+              </label>
+              <select
+                v-model="specLoopConfig.defaultProjectId"
+                @change="handleSaveSpecLoopConfig()"
+                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
+              >
+                <option value="">{{ t('specLoopAllProjects') }}</option>
+                <option v-for="proj in specLoopProjects" :key="proj.id" :value="proj.id">
+                  {{ proj.name }}
+                </option>
+              </select>
+            </div>
+
+            <!-- Reverse Pull Finalized Specs (only when connected) -->
+            <div v-if="specLoopConnected" class="pt-2 border-t border-slate-100 dark:border-slate-700/60 space-y-2">
+              <div class="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center space-x-1">
+                <CloudDownload class="w-3.5 h-3.5 text-indigo-500" />
+                <span>{{ t('pullSpecsTitle') }}</span>
+              </div>
+              <select
+                v-model="pullTaskId"
+                class="w-full px-2 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-[11px] text-slate-800 dark:text-slate-200 cursor-pointer"
+              >
+                <option v-for="task in specLoopTasks" :key="task.id" :value="task.id">
+                  {{ task.id }} · {{ task.title }}
+                </option>
+              </select>
+              <button
+                type="button"
+                @click="handlePullFullSpecs"
+                :disabled="!pullTaskId || isPullingSpecs"
+                class="w-full py-1.5 px-3 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer disabled:opacity-50"
+              >
+                <CloudDownload class="w-3.5 h-3.5" />
+                <span>{{ isPullingSpecs ? t('processing') : t('pullFullSpecsBtn') }}</span>
+              </button>
+              <div v-if="pullSpecsMsg" class="p-2 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-[11px] space-y-1">
+                <div>✓ {{ pullSpecsMsg }}</div>
+                <button
+                  v-if="pullSpecsPrompt"
+                  type="button"
+                  @click="copyToClipboard(pullSpecsPrompt, 'prompt')"
+                  class="inline-flex items-center space-x-1 text-[10px] underline font-semibold cursor-pointer"
+                >
+                  <Copy class="w-3 h-3" />
+                  <span>{{ copiedPrompt ? t('copiedPrompt') : t('copyPrompt') }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Collapsible Manual Token Fallback -->
+            <details class="pt-1 text-[11px]">
+              <summary class="cursor-pointer text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 select-none">
+                {{ t('specLoopManualTokenToggle') }}
+              </summary>
+              <div class="mt-2 space-y-2">
+                <input
+                  v-model="specLoopConfig.apiToken"
+                  type="password"
+                  :placeholder="t('specLoopTokenPlaceholder')"
+                  class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  @click="handleSaveSpecLoopConfig"
+                  class="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+                >
+                  <Check v-if="specLoopSaved" class="w-3.5 h-3.5 text-emerald-300" />
+                  <span>{{ specLoopSaved ? t('specLoopSavedNotice') : t('saveSpecLoopBtn') }}</span>
+                </button>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -1498,7 +1963,7 @@ function openSidePanel() {
           <p class="leading-relaxed">
             {{ t('workflowDesc') }}
           </p>
-          <pre class="p-2 rounded bg-white dark:bg-slate-900 font-mono text-[10px] text-slate-800 dark:text-slate-200 overflow-x-auto">@requirements/PRD-xxx.md {{ t('aiPromptPrd')('PRD-xxx').split(' ')[1] || 'Please implement this feature module based on the requirement specification and prototype assets' }}</pre>
+          <pre class="p-2 rounded bg-white dark:bg-slate-900 font-mono text-[10px] text-slate-800 dark:text-slate-200 overflow-x-auto">@specs/prd/feature.md @specs/design/feature.md @specs/api/feature.md</pre>
         </div>
       </section>
     </main>

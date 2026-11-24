@@ -20,9 +20,19 @@ export interface BestFrameResult {
   frames: ScoredFrameItem[];
 }
 
+const SPECLOOP_STORAGE_KEY = 'pagespec_specloop_config';
+const PENDING_AUTH_KEY = 'pagespec_pending_auth_origin';
+
+function safeOrigin(rawUrl: string): string {
+  try {
+    return new URL(rawUrl).origin;
+  } catch {
+    return '';
+  }
+}
+
 export default defineBackground(() => {
-  // 1. Download & Frame Orchestration
-  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || typeof message !== 'object') return false;
 
     // Trigger Browser Download
@@ -57,7 +67,120 @@ export default defineBackground(() => {
       return true;
     }
 
-    // Proxy image download across domains to bypass CORS restrictions (Base64 only, avoiding 8x JSON array bloat)
+    // Capture Visible Active Tab PNG Screenshot (for QA Companion one-click bug snapshot, uses existing activeTab)
+    if (message.type === 'CAPTURE_VISIBLE_TAB') {
+      (async () => {
+        try {
+          const dataUrl = await browser.tabs.captureVisibleTab(undefined as any, { format: 'png' });
+          const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+          sendResponse({ ok: true, dataUrl, base64 });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // Open SpecLoop Extension Auth Handshake Tab
+    if (message.type === 'OPEN_SPECLOOP_AUTH_TAB') {
+      const baseUrl = String(message.baseUrl || '').trim().replace(/\/+$/, '');
+      const version = String(message.version || '1.2.0');
+      (async () => {
+        try {
+          const origin = safeOrigin(baseUrl);
+          if (!origin) {
+            throw new Error('无效的 SpecLoop 服务器地址');
+          }
+          await browser.storage.local.set({ [PENDING_AUTH_KEY]: origin });
+          const authUrl = `${baseUrl}/#/auth/extension-connect?client=pagespec&version=${encodeURIComponent(version)}`;
+          await browser.tabs.create({ url: authUrl });
+          sendResponse({ ok: true });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // Receive Handshake Token from SpecLoop WebApp Auth Page (origin-verified)
+    if (message.type === 'SAVE_SPECLOOP_HANDSHAKE') {
+      (async () => {
+        try {
+          const stored = await browser.storage.local.get([SPECLOOP_STORAGE_KEY, PENDING_AUTH_KEY]);
+          const currentCfg = (stored?.[SPECLOOP_STORAGE_KEY] || {}) as Record<string, any>;
+          const pendingOrigin = String(stored?.[PENDING_AUTH_KEY] || '');
+          const configuredOrigin = safeOrigin(String(currentCfg.baseUrl || ''));
+          const senderOrigin = safeOrigin(sender?.tab?.url || message.origin || '');
+
+          if (!senderOrigin || (senderOrigin !== pendingOrigin && senderOrigin !== configuredOrigin)) {
+            sendResponse({ ok: false, error: '授权来源域名不匹配，已拦截' });
+            return;
+          }
+
+          const nextCfg = {
+            baseUrl: String(message.baseUrl || senderOrigin).trim().replace(/\/+$/, ''),
+            apiToken: String(message.apiToken || '').trim(),
+            defaultTaskId: currentCfg.defaultTaskId || '',
+            defaultProjectId: String(message.defaultProjectId || currentCfg.defaultProjectId || '').trim(),
+            userEmail: String(message.userEmail || '').trim(),
+            userDisplayName: String(message.userDisplayName || '').trim(),
+          };
+
+          await browser.storage.local.set({ [SPECLOOP_STORAGE_KEY]: nextCfg });
+          await browser.storage.local.remove(PENDING_AUTH_KEY);
+
+          // Notify any open Popup/SidePanel views
+          browser.runtime.sendMessage({ type: 'SPECLOOP_CONFIG_UPDATED', config: nextCfg }).catch(() => {});
+
+          sendResponse({ ok: true, config: nextCfg });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // Generic SpecLoop API Request Proxy (bypasses CORS in Popup/SidePanel)
+    if (message.type === 'SPECLOOP_API_REQUEST') {
+      const { url, method = 'GET', apiToken, body } = message;
+      (async () => {
+        try {
+          const headers: Record<string, string> = {};
+          if (apiToken) {
+            headers['Authorization'] = `Bearer ${apiToken}`;
+          }
+          if (body !== undefined) {
+            headers['Content-Type'] = 'application/json';
+          }
+          const resp = await fetch(url, {
+            method,
+            headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+          });
+          const rawText = await resp.text();
+          let data: any = null;
+          try {
+            data = rawText ? JSON.parse(rawText) : null;
+          } catch {
+            data = { message: rawText };
+          }
+          if (!resp.ok) {
+            sendResponse({
+              ok: false,
+              status: resp.status,
+              error: data?.error || data?.message || `HTTP ${resp.status}`,
+            });
+            return;
+          }
+          sendResponse({ ok: true, status: resp.status, data });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // Proxy image download across domains to bypass CORS restrictions (Base64 only)
     if (message.type === 'FETCH_IMAGE_DATA') {
       const { url } = message;
       (async () => {
@@ -106,6 +229,7 @@ export default defineBackground(() => {
           sendResponse({
             ok: true,
             taskId: data?.taskId || data?.data?.taskId,
+            staleTestCount: data?.staleTestCount ?? data?.data?.staleTestCount ?? 0,
             message: data?.message || '推送成功',
           });
         } catch (err: any) {
@@ -136,7 +260,6 @@ export default defineBackground(() => {
             frames = [{ frameId: 0 }];
           }
 
-          // Query score across all frames
           const scorePromises: Promise<ScoredFrameItem>[] = frames.map(async (f) => {
             try {
               const res: any = await browser.tabs.sendMessage(

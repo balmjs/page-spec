@@ -18,8 +18,8 @@ export const messages = {
     switchLangTitle: 'Switch to 简体中文',
 
     // Directory Bar
-    boundDir: (name: string) => `Project: requirements (${name})`,
-    unboundDir: 'No local requirements folder bound',
+    boundDir: (name: string) => `Project Root: ${name}`,
+    unboundDir: 'No local project folder bound',
     manageDir: 'Manage',
     setupDir: 'Set Up',
 
@@ -27,6 +27,7 @@ export const messages = {
     prdTab: 'PRD',
     designTab: 'Design',
     apiTab: 'API Spec',
+    qaTab: 'QA',
     dirTab: 'Settings',
 
     // Frame Card
@@ -40,37 +41,37 @@ export const messages = {
     // PRD Panel
     smartPrdTitle: 'Smart PRD Local Extractor',
     smartPrdDesc:
-      'Preserves current session authentication. Automatically pierces nested menu iframes, targets the core body frame, downloads high-res prototypes concurrently, and rewrites asset paths as isolated local relative references.',
+      'Preserves current session authentication. Automatically pierces nested menu iframes, targets the core body frame, downloads high-res prototypes concurrently, and saves cleanly to specs/prd/.',
     parseEngine: 'Parsing Engine',
     engineAuto: 'Auto Detect (Recommended)',
     engineTencent: 'Tencent Docs AST (Smart Document)',
     engineDom: 'Standard Web DOM',
     autoTrimNoiseLabel: 'Auto-skip noisy sections (Revision History / Changelog)',
     autoTrimmedNotice: (names: string) => `Auto-skipped noisy sections: ${names}`,
-    btnWriteDir: (name?: string) => (name ? `Save to requirements (${name})` : 'Save to requirements folder'),
+    btnWriteDir: (name?: string) => (name ? `Save to Project (${name})` : 'Save to Local Project'),
     btnDownloadZip: 'Download PRD Bundle (.zip)',
     processing: 'Processing...',
     prepPrd: 'Preparing to extract page content and prototype graphics...',
-    writingFiles: 'Writing Markdown and assets to local requirements directory...',
-    successWrite: (name: string) => `Saved to local requirements [${name}]`,
+    writingFiles: 'Writing Markdown and assets to local specs/ directory...',
+    successWrite: (path: string) => `Saved to ${path}`,
     successDownload: 'Bundled! Browser download started',
     docTitle: 'Document Title:',
     localizedAssets: 'Localized Prototypes:',
     assetsCount: (n: number) => `${n} files`,
-    isolatedPath: 'Asset Isolation Path:',
+    isolatedPath: 'Saved Location:',
     downgradeNotice: (n: number) => `Resource fallback notices (${n}):`,
     copyPrompt: 'Copy AI Prompt',
     copiedPrompt: 'Prompt Copied',
     copyFullMarkdown: 'Copy Markdown',
     copiedMarkdown: 'Markdown Copied',
     viewMarkdownPreview: 'View Markdown Preview',
-    aiPromptPrd: (title: string) =>
-      `@requirements/${title}.md Please implement this feature module based on the requirement specification and prototype assets in assets/${title}/`,
+    aiPromptPrd: (relPath: string, title: string) =>
+      `@${relPath} Please implement this feature module based on the requirement specification and co-located prototype assets in ./assets/${title}/`,
 
-    // Design Panel (Lanhu / MasterGo / Figma / Generic)
+    // Design Panel
     designTitle: 'UI Design & Artboard Extractor',
     designDesc:
-      'Detects artboards on Lanhu, MasterGo, Modao, or web design galleries. Strips thumbnail CDN resize params to recover original HD images and captures annotations/tokens.',
+      'Detects artboards on Lanhu, MasterGo, Modao, or web design galleries. Strips thumbnail CDN resize params to recover original HD images and saves cleanly to specs/design/.',
     rescanArtboards: 'Rescan Artboards',
     scanningArtboards: 'Scanning artboards on current page...',
     searchArtboardsPlaceholder: 'Search artboards by name...',
@@ -78,19 +79,19 @@ export const messages = {
     noArtboardsFound: 'No artboards or large design images detected in this frame. Try switching frame or scrolling to load thumbnails.',
     detectedTokens: 'Color Tokens:',
     detectedAnnotations: 'Annotations:',
-    btnWriteDesignDir: (name?: string) => (name ? `Save Design to requirements (${name})` : 'Save Design to requirements folder'),
+    btnWriteDesignDir: (name?: string) => (name ? `Save Design to Project (${name})` : 'Save Design to Local Project'),
     btnDownloadDesignZip: 'Download Design Bundle (.zip)',
-    successDesignWrite: (name: string) => `Design saved to local requirements [${name}]`,
+    successDesignWrite: (path: string) => `Design saved to ${path}`,
     successDesignDownload: 'Design bundle ready! Browser download started',
     exportedArtboards: 'Exported Artboards:',
-    aiPromptDesign: (title: string) =>
-      `@requirements/${title}-design.md Please implement the UI layout and styling strictly following the artboards in assets/${title}/`,
+    aiPromptDesign: (relPath: string, title: string) =>
+      `@${relPath} Please implement the UI layout and styling strictly following the artboards in ./assets/${title}/`,
 
     // API Panel
     targetApiFrame: 'Target API Frame:',
     structuredApiTitle: 'Structured API Spec Extractor',
     structuredApiDesc:
-      'Prioritizes sniffing Swagger / OpenAPI raw JSON specifications to generate high-fidelity Markdown (auto-dereferencing $ref and flattening schema tables); supports selective endpoint filtering.',
+      'Prioritizes sniffing Swagger / OpenAPI raw JSON specifications to generate high-fidelity Markdown ($ref dereferenced); supports selective endpoint filtering and saves cleanly to specs/api/.',
     rescanEndpoints: 'Rescan Endpoints',
     scanningEndpoints: 'Sniffing OpenAPI endpoints...',
     searchEndpointsPlaceholder: 'Filter by path, summary, or method...',
@@ -99,16 +100,16 @@ export const messages = {
     selectAll: 'Select All',
     clearSelection: 'Clear',
     noOpenApiListFallback: 'No raw OpenAPI endpoint list sniffed (will extract via Deep DOM parser on click).',
-    btnWriteApiDir: (name?: string) => (name ? `Save to requirements (${name})` : 'Save to requirements folder'),
+    btnWriteApiDir: (name?: string) => (name ? `Save API to Project (${name})` : 'Save API to Local Project'),
     btnDownloadApiMd: 'Download API Spec (.md)',
-    successApiWrite: (name: string) => `Saved to local requirements [${name}]`,
+    successApiWrite: (path: string) => `API spec saved to ${path}`,
     successApiDownload: 'Extraction complete! API Markdown generated',
     detectedEndpoints: 'Endpoints Exported:',
     endpointsCount: (n: number) => `${n} endpoints`,
     openapiEngine: 'OpenAPI Spec Engine ($ref dereferenced)',
     domEngine: 'Deep DOM Parser',
-    aiPromptApi: (title: string) =>
-      `@requirements/${title}-api.md Please implement the API client requests and data types according to these endpoints`,
+    aiPromptApi: (relPath: string) =>
+      `@${relPath} Please implement the API client requests and TypeScript data types according to these endpoints`,
 
     // Incremental Diff & Section Trimmer
     diffDetectedTitle: 'Incremental Spec Changes Detected',
@@ -117,53 +118,87 @@ export const messages = {
     diffGeneratedFile: (name: string) => `Generated: ${name}`,
     copyDiffPrompt: 'Copy Diff AI Prompt',
     copiedDiffPrompt: 'Diff Prompt Copied',
-    aiPromptDiff: (diffFile: string, mainFile: string) =>
-      `@requirements/${diffFile} @requirements/${mainFile} Please review the incremental changes in ${diffFile} and update only the affected code accordingly.`,
+    aiPromptDiff: (diffPath: string, mainPath: string) =>
+      `@${diffPath} @${mainPath} Please review the incremental changes in ${diffPath} and update only the affected code accordingly.`,
     sectionTrimmerTitle: (kept: number, total: number) => `Trim Markdown Sections (${kept}/${total} kept)`,
     noisyBadge: 'Noisy',
     applyTrimOverwrite: 'Apply Trim & Overwrite File',
     applyTrimCopyOnly: 'Apply Trim & Copy',
     trimAppliedSuccess: 'Trimmed Markdown applied!',
 
-    // SpecLoop Interop
+    // SpecLoop Interop (v1.2 Opt-in & Bidirectional)
+    syncToSpecLoopCheckbox: 'Also sync upload to SpecLoop task (optional)',
+    createNewSpecLoopTask: (title?: string) =>
+      title ? `+ Create new task "${title}"` : '+ Auto-create new task',
+    refreshSpecLoopTasks: 'Refresh SpecLoop tasks',
+    sectionAnchorAuto: 'PRD Section Anchor (optional)',
+    staleTestsMarked: (n: number) => `${n} QA items flagged stale`,
     exportSpecBundle: 'Export .specbundle.zip',
     pushToSpecLoop: 'Push to SpecLoop',
     pushingToSpecLoop: 'Pushing...',
     pushSpecLoopSuccess: (taskId?: string) =>
-      taskId ? `Pushed to SpecLoop (Task: ${taskId})` : 'Pushed to SpecLoop successfully!',
+      taskId ? `Synced to SpecLoop (${taskId})` : 'Synced to SpecLoop successfully!',
     specLoopSectionTitle: 'SpecLoop Platform Bridge (Optional)',
     specLoopSectionDesc:
-      'Configure your self-hosted SpecLoop server to push third-party PRDs, Lanhu designs, and API specs directly into your team closed-loop workspace.',
+      'Optional team integration. When disconnected, PageSpec stays a 100% standalone offline extractor with zero UI clutter.',
     specLoopUrlLabel: 'Server Base URL',
     specLoopUrlPlaceholder: 'https://specloop.yourdomain.com',
-    specLoopTokenLabel: 'API Token (Optional)',
-    specLoopTokenPlaceholder: 'Bearer token if enabled',
-    specLoopTaskIdLabel: 'Default Task ID (Optional)',
-    specLoopTaskIdPlaceholder: 'e.g. TASK-2026-001 (leave blank to auto-create)',
-    saveSpecLoopBtn: 'Save SpecLoop Config',
-    specLoopSavedNotice: 'SpecLoop config saved',
+    specLoopConnectBtn: 'One-Click Authorize & Connect',
+    specLoopConnectedAs: (email: string) => `Connected: ${email}`,
+    specLoopDisconnectBtn: 'Disconnect',
+    specLoopManualTokenToggle: 'Manual API Token (Advanced)',
+    specLoopTokenLabel: 'API Token (PAT)',
+    specLoopTokenPlaceholder: 'slp_xxxxxxxx',
+    specLoopProjectLabel: 'Default Project Workspace',
+    specLoopAllProjects: 'All Projects',
+    saveSpecLoopBtn: 'Save & Verify Connection',
+    specLoopSavedNotice: 'SpecLoop connected & saved',
+    pullSpecsTitle: 'Pull Finalized Task Specs to Local Project',
+    pullFullSpecsBtn: 'Sync Task Full Specs -> specs/',
+    pullSpecsSuccess: (count: number, root: string) => `Synced ${count} spec files into ${root}/`,
+
+    // Live QA Companion (Conditional)
+    qaCompanionTitle: 'Live QA Companion (SpecLoop)',
+    qaNoTasks: 'No active SpecLoop tasks',
+    qaNoItems: 'No QA Test List items yet for this task.',
+    qaCaptureFailBtn: 'Fail & Capture Viewport + Errors',
+    qaDiagCaptured: (errCount: number, viewport: string) =>
+      `Captured viewport (${viewport}) · ${errCount} Console/HTTP errors`,
+    qaNotePlaceholder: 'Describe what failed in one sentence...',
+    qaSubmitFailBtn: 'Submit Failure to SpecLoop',
+    qaFailSubmitted: 'Failure + screenshot sent to SpecLoop!',
+    qaUnlockedReleaseNotice: '100% Passed! Ready to approve release in SpecLoop.',
+    qaNoFailedItems: 'No failed QA items found for this task.',
+    pullQaBugsBtn: (n: number) => `Pull ${n} Failed QA Bugs -> specs/qa/`,
+    pullQaBugsSuccess: (n: number, path: string) => `Saved ${n} QA failure bugs to ${path}`,
+    copyFixPrompt: 'Copy Bugfix AI Prompt',
+    cancelBtn: 'Cancel',
 
     // Directory Config Panel
-    localDirTitle: 'Local Project requirements Folder',
+    localDirTitle: 'Local Project Root Folder',
     localDirDesc:
-      'Bind your local frontend project requirements folder. When extracting on any PRD, Design, or API page, PageSpec will directly write Markdown, Diffs, and assets into your workspace.',
-    currentBinding: 'Current Bound Directory:',
+      'Pick your project root directory (e.g. my-app/). PageSpec automatically creates specs/{prd,design,api,qa} without polluting your root folder, and automatically preserves legacy requirements/ folders.',
+    rootFolderPrefLabel: 'Specs Folder Strategy',
+    rootPrefAuto: 'Auto (specs/, or existing requirements/)',
+    rootPrefSpecs: 'Always specs/ (Recommended)',
+    rootPrefRequirements: 'Always requirements/',
+    currentBinding: 'Bound Project Folder:',
     unbound: '(Not bound yet)',
     browserSupport: 'Browser Support:',
     fsSupportedText: 'Native directory write supported (Chrome / Edge)',
     fsUnsupportedText: 'Not supported (falls back to ZIP download)',
-    btnSelectDir: 'Select requirements Folder',
-    btnReSelectDir: 'Reselect Directory',
+    btnSelectDir: 'Select Project Folder',
+    btnReSelectDir: 'Switch Project Folder',
     btnUnbind: 'Unbind',
     workflowTitle: 'Recommended AI Coding Workflow',
-    workflowDesc: 'Once saved to requirements/, use directly in Cursor or Claude Code:',
+    workflowDesc: 'Auto-organized under specs/{prd,design,api,qa} for instant AI referencing:',
 
     // Footer
     footerTitle: 'PageSpec • Pure Offline Spec Extraction',
 
     // Errors
     errFsUnsupported: 'Current browser does not support direct directory writing. Please use ZIP download.',
-    errPermDenied: 'Read/write permission for requirements directory was not granted. Please click and authorize.',
+    errPermDenied: 'Read/write permission for project directory was not granted. Please authorize again.',
     errNoTab: 'Unable to connect to current active browser tab.',
     errExtractFailed: 'Extraction failed. Please refresh the target page and try again.',
     errSelectDirFailed: 'Failed to select directory.',
@@ -182,8 +217,8 @@ export const messages = {
     switchLangTitle: 'Switch to English',
 
     // Directory Bar
-    boundDir: (name: string) => `工程目录: requirements (${name})`,
-    unboundDir: '未绑定本地 requirements 目录',
+    boundDir: (name: string) => `项目工程: ${name}`,
+    unboundDir: '未绑定本地项目文件夹',
     manageDir: '管理',
     setupDir: '前往设置',
 
@@ -191,6 +226,7 @@ export const messages = {
     prdTab: 'PRD 需求',
     designTab: '设计稿',
     apiTab: 'API 规范',
+    qaTab: '实测',
     dirTab: '目录与配置',
 
     // Frame Card
@@ -204,37 +240,37 @@ export const messages = {
     // PRD Panel
     smartPrdTitle: '智能 PRD 本地化提取',
     smartPrdDesc:
-      '保留当前会话鉴权态。自动穿透嵌套菜单 iframe，锁定正文框架，并发抓取高分辨率原型图并隔离重写为本地相对路径。',
+      '保留当前登录态，自动穿透嵌套菜单 iframe 并抓取高清原型图，自动保存至项目的 specs/prd/ 目录并就近内聚图片资源。',
     parseEngine: '解析引擎',
     engineAuto: '自动识别 (推荐)',
     engineTencent: '腾讯文档 AST (智能文档)',
     engineDom: '通用网页 DOM',
     autoTrimNoiseLabel: '自动跳过常见噪音章节（如修订历史 / 变更记录）',
     autoTrimmedNotice: (names: string) => `已自动过滤噪音章节: ${names}`,
-    btnWriteDir: (name?: string) => (name ? `一键写入本地 requirements (${name})` : '写入本地 requirements 目录'),
+    btnWriteDir: (name?: string) => (name ? `一键保存至本地项目 (${name})` : '一键保存至本地项目'),
     btnDownloadZip: '下载 PRD 压缩包 (.zip)',
     processing: '正在处理中...',
     prepPrd: '准备提取当前页面内容与原型图...',
-    writingFiles: '正在将 Markdown 与图片写入本地 requirements 目录...',
-    successWrite: (name: string) => `成功写入本地目录 [${name}]`,
+    writingFiles: '正在按分层结构写入本地 specs/ 目录...',
+    successWrite: (path: string) => `已写入 ${path}`,
     successDownload: '打包完成！已触发浏览器下载',
     docTitle: '文档标题:',
     localizedAssets: '本地化原型图:',
     assetsCount: (n: number) => `${n} 张`,
-    isolatedPath: '资源隔离路径:',
+    isolatedPath: '落盘位置:',
     downgradeNotice: (n: number) => `部分资源降级提示 (${n} 个):`,
     copyPrompt: '复制 AI 提示词',
     copiedPrompt: '提示词已复制',
     copyFullMarkdown: '复制全文',
     copiedMarkdown: 'Markdown已复制',
     viewMarkdownPreview: '查看 Markdown 预览',
-    aiPromptPrd: (title: string) =>
-      `@requirements/${title}.md 请根据该需求文档与对应 assets/${title}/ 原型图，实现此功能模块`,
+    aiPromptPrd: (relPath: string, title: string) =>
+      `@${relPath} 请根据该需求规格文档与同级 ./assets/${title}/ 下的原型图实现功能`,
 
     // Design Panel
     designTitle: '蓝湖 / 在线设计稿高保真提取',
     designDesc:
-      '自动嗅探蓝湖、MasterGo、墨刀或页面中的设计画板，剥离缩略图 CDN 参数还原高清原图，支持按需勾选画板并同步提取页面标注与色值。',
+      '自动嗅探蓝湖、MasterGo、墨刀等页面的高清画板原图与标注色值，一键自动保存至项目的 specs/design/ 目录。',
     rescanArtboards: '重新扫描画板',
     scanningArtboards: '正在扫描当前页面设计画板...',
     searchArtboardsPlaceholder: '按画板名称搜索过滤...',
@@ -242,19 +278,19 @@ export const messages = {
     noArtboardsFound: '当前框架未检测到设计画板或大图（可尝试切换 Frame 或滚动页面加载缩略图后点击重新扫描）。',
     detectedTokens: '捕获色值:',
     detectedAnnotations: '页面标注:',
-    btnWriteDesignDir: (name?: string) => (name ? `一键写入设计稿至 requirements (${name})` : '写入设计稿至本地 requirements'),
+    btnWriteDesignDir: (name?: string) => (name ? `一键保存设计稿至项目 (${name})` : '一键保存设计稿至本地项目'),
     btnDownloadDesignZip: '下载设计稿资产包 (.zip)',
-    successDesignWrite: (name: string) => `设计稿已写入本地目录 [${name}]`,
+    successDesignWrite: (path: string) => `设计稿已写入 ${path}`,
     successDesignDownload: '设计稿打包完成！已触发浏览器下载',
     exportedArtboards: '导出画板数:',
-    aiPromptDesign: (title: string) =>
-      `@requirements/${title}-design.md 请严格对照 assets/${title}/ 下的设计画板与标注信息，完成页面 UI 布局与样式实现`,
+    aiPromptDesign: (relPath: string, title: string) =>
+      `@${relPath} 请严格对照同级 ./assets/${title}/ 下的设计画板与标注信息，完成页面 UI 布局与样式实现`,
 
     // API Panel
     targetApiFrame: '目标接口框架:',
     structuredApiTitle: '结构化 API 规范提取',
     structuredApiDesc:
-      '优先嗅探 Swagger / OpenAPI 底层 JSON 规范直出高保真 Markdown（自动解引用 $ref 并打平属性表格）；支持按需搜索勾选所需接口子集。',
+      '优先嗅探 Swagger / OpenAPI 底层 JSON 直出精简 Markdown（自动解引用 $ref），支持按需勾选接口并自动保存至 specs/api/。',
     rescanEndpoints: '重新嗅探接口',
     scanningEndpoints: '正在嗅探 OpenAPI 接口列表...',
     searchEndpointsPlaceholder: '按路径、接口中文名或方法过滤...',
@@ -263,16 +299,16 @@ export const messages = {
     selectAll: '全选',
     clearSelection: '清空',
     noOpenApiListFallback: '未嗅探到底层 OpenAPI 列表（点击下方按钮将自动使用 DOM 深度解析提取当前页）。',
-    btnWriteApiDir: (name?: string) => (name ? `一键写入 requirements (${name})` : '写入本地 requirements 目录'),
+    btnWriteApiDir: (name?: string) => (name ? `一键保存接口文档至项目 (${name})` : '一键保存接口文档至本地项目'),
     btnDownloadApiMd: '下载 API 规范文档 (.md)',
-    successApiWrite: (name: string) => `成功写入本地目录 [${name}]`,
+    successApiWrite: (path: string) => `接口文档已写入 ${path}`,
     successApiDownload: '提取完成！已生成 API Markdown',
     detectedEndpoints: '导出接口数:',
     endpointsCount: (n: number) => `${n} 个`,
     openapiEngine: 'OpenAPI 规格引擎 ($ref 已解引用)',
     domEngine: 'DOM 深度解析',
-    aiPromptApi: (title: string) =>
-      `@requirements/${title}-api.md 请根据该接口定义实现相关 API 请求与数据类型`,
+    aiPromptApi: (relPath: string) =>
+      `@${relPath} 请根据该接口契约实现相关 API 请求封装与 TypeScript 类型定义`,
 
     // Incremental Diff & Section Trimmer
     diffDetectedTitle: '检测到本地文档增量变更',
@@ -281,53 +317,87 @@ export const messages = {
     diffGeneratedFile: (name: string) => `已同步生成增量差异文件: ${name}`,
     copyDiffPrompt: '复制增量 Diff 提示词',
     copiedDiffPrompt: 'Diff 提示词已复制',
-    aiPromptDiff: (diffFile: string, mainFile: string) =>
-      `@requirements/${diffFile} @requirements/${mainFile} 请仔细阅读 ${diffFile} 中的需求/接口增量变更点，仅针对新增与修改的部分更新现有代码。`,
+    aiPromptDiff: (diffPath: string, mainPath: string) =>
+      `@${diffPath} @${mainPath} 请仔细阅读 ${diffPath} 中的需求/接口增量变更点，仅针对新增与修改的部分更新现有代码。`,
     sectionTrimmerTitle: (kept: number, total: number) => `✂️ 章节精简微调 (保留 ${kept}/${total} 节)`,
     noisyBadge: '建议剔除',
     applyTrimOverwrite: '应用裁剪并覆写本地文件',
     applyTrimCopyOnly: '应用裁剪并复制全文',
     trimAppliedSuccess: '裁剪后的精简文档已更新！',
 
-    // SpecLoop Interop
+    // SpecLoop Interop (v1.2 Opt-in & Bidirectional)
+    syncToSpecLoopCheckbox: '同时同步上传至 SpecLoop 任务（可选）',
+    createNewSpecLoopTask: (title?: string) =>
+      title ? `+ 新建任务「${title}」` : '+ 自动新建闭环任务',
+    refreshSpecLoopTasks: '刷新 SpecLoop 活跃任务',
+    sectionAnchorAuto: '绑定至 PRD 指定章节（可选）',
+    staleTestsMarked: (n: number) => `已将 ${n} 条受影响用例标为待复测`,
     exportSpecBundle: '导出 .specbundle.zip',
     pushToSpecLoop: '推送至 SpecLoop',
-    pushingToSpecLoop: '推送中...',
+    pushingToSpecLoop: '同步中...',
     pushSpecLoopSuccess: (taskId?: string) =>
-      taskId ? `已推送至 SpecLoop（任务号: ${taskId}）` : '已成功推送至 SpecLoop 协同平台！',
-    specLoopSectionTitle: 'SpecLoop 协同平台直推配置（可选）',
+      taskId ? `已同步至 SpecLoop（${taskId}）` : '已成功同步至 SpecLoop！',
+    specLoopSectionTitle: 'SpecLoop 协同平台连接（可选）',
     specLoopSectionDesc:
-      '配置你自建的 SpecLoop 闭环平台地址后，可将腾讯文档 PRD、蓝湖设计图与 Swagger 接口一键推送入库（不配置时保持 100% 纯离线本地使用）。',
+      '面向团队闭环的可选扩展：未连接时 PageSpec 保持 100% 纯粹独立的离线本地提取体验；连接后可按需勾选同步或使用实测伴侣。',
     specLoopUrlLabel: '平台服务地址 (Base URL)',
     specLoopUrlPlaceholder: 'https://specloop.yourdomain.com',
-    specLoopTokenLabel: 'API Token（可选）',
-    specLoopTokenPlaceholder: '如开启鉴权请填写 Token',
-    specLoopTaskIdLabel: '默认关联任务 ID（可选）',
-    specLoopTaskIdPlaceholder: '如 TASK-2026-001（留空则自动新建任务）',
-    saveSpecLoopBtn: '保存 SpecLoop 配置',
-    specLoopSavedNotice: 'SpecLoop 配置已保存',
+    specLoopConnectBtn: '一键网页登录授权连接',
+    specLoopConnectedAs: (email: string) => `已连接账号: ${email}`,
+    specLoopDisconnectBtn: '断开连接',
+    specLoopManualTokenToggle: '手动填写 API Token（高级）',
+    specLoopTokenLabel: 'API Token (PAT)',
+    specLoopTokenPlaceholder: 'slp_xxxxxxxx',
+    specLoopProjectLabel: '默认关联项目空间',
+    specLoopAllProjects: '全部项目空间',
+    saveSpecLoopBtn: '保存并校验连接',
+    specLoopSavedNotice: 'SpecLoop 已连通并保存',
+    pullSpecsTitle: '从 SpecLoop 反向同步至本地项目',
+    pullFullSpecsBtn: '同步所选任务全套规格 -> specs/',
+    pullSpecsSuccess: (count: number, root: string) => `已同步 ${count} 份规格文档至本地 ${root}/`,
+
+    // Live QA Companion (Conditional)
+    qaCompanionTitle: '实测抓虫伴侣 (SpecLoop)',
+    qaNoTasks: '当前暂无进行中的任务',
+    qaNoItems: '该任务尚未生成测试检验清单。',
+    qaCaptureFailBtn: '失败并一键截屏抓报错',
+    qaDiagCaptured: (errCount: number, viewport: string) =>
+      `已捕获当前视口 (${viewport}) · 采集 ${errCount} 条 Console/接口异常`,
+    qaNotePlaceholder: '用一句话描述测试不通过现象...',
+    qaSubmitFailBtn: '打回开发并回传截图',
+    qaFailSubmitted: '已自动上传现场截图与报错日志并通知开发！',
+    qaUnlockedReleaseNotice: '测试清单已 100% 通过！可前往 SpecLoop 点击放行发布。',
+    qaNoFailedItems: '该任务目前没有未通过的测试项。',
+    pullQaBugsBtn: (n: number) => `一键拉取 ${n} 条打回 Bug -> specs/qa/`,
+    pullQaBugsSuccess: (n: number, path: string) => `已将 ${n} 条打回记录与截图写入 ${path}`,
+    copyFixPrompt: '复制修复 AI 提示词',
+    cancelBtn: '取消',
 
     // Directory Config Panel
-    localDirTitle: '本地工程 requirements 目录',
+    localDirTitle: '本地项目根目录绑定',
     localDirDesc:
-      '绑定你本地前端项目的 requirements 文件夹。之后在任何需求、设计稿或接口页面点击提取，插件将直接在本地工程中生成 Markdown、增量 Diff 与图片资源。',
-    currentBinding: '当前绑定目录:',
+      '直接选择你的项目根目录（如 my-app/）即可！保存时自动创建 specs/{prd,design,api,qa} 分层目录（若老项目已有 requirements/ 自动兼容沿用，绝不套娃）。',
+    rootFolderPrefLabel: '规格根目录策略',
+    rootPrefAuto: '智能识别（默认 specs/，兼容已有 requirements/）',
+    rootPrefSpecs: '强制使用 specs/（推荐）',
+    rootPrefRequirements: '强制使用 requirements/',
+    currentBinding: '当前绑定工程:',
     unbound: '（尚未绑定）',
     browserSupport: '浏览器支持:',
     fsSupportedText: '支持原生目录直写 (Chrome / Edge)',
     fsUnsupportedText: '不支持 (降级为 ZIP 下载)',
-    btnSelectDir: '选择 requirements 文件夹',
-    btnReSelectDir: '重新选择目录',
+    btnSelectDir: '选择本地项目文件夹',
+    btnReSelectDir: '切换项目文件夹',
     btnUnbind: '解除绑定',
-    workflowTitle: 'AI Coding 工作流推荐',
-    workflowDesc: '落盘至 requirements/ 目录后，直接在 Cursor 或 Claude Code 中使用：',
+    workflowTitle: 'AI Coding 推荐工作流',
+    workflowDesc: '自动归类至 specs/{prd,design,api,qa}，在 Cursor / Claude Code 中直接引用：',
 
     // Footer
     footerTitle: 'PageSpec • 纯离线需求与设计提取',
 
     // Errors
-    errFsUnsupported: '当前浏览器不支持目录直接写入，请使用下载方式',
-    errPermDenied: '未获得对本地 requirements 目录的读写授权，请重新点击并授权',
+    errFsUnsupported: '当前浏览器不支持目录直接写入，请使用 ZIP 下载',
+    errPermDenied: '未获得本地项目目录的读写授权，请重新点击授权',
     errNoTab: '无法连接到当前激活的网页标签',
     errExtractFailed: '提取失败，请刷新目标页面后重试',
     errSelectDirFailed: '选择目录失败',
