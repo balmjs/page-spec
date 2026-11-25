@@ -1,61 +1,71 @@
 # Privacy Policy for PageSpec
 
-**Last Updated:** November 23, 2026
+**Last Updated:** November 24, 2026
 
 ## 1. Overview
 
-**PageSpec** ("the Extension") is an open-source browser extension developed by BalmJS. The Extension is designed to extract authenticated web requirement documents (PRDs), UI design artboards, and API specifications into clean Markdown files and co-located static assets directly inside your local project's `specs/{prd,design,api}` folders or downloadable ZIP archives.
+**PageSpec** ("the Extension") is an open-source browser extension developed by **BalmJS**. PageSpec extracts web product specifications (PRDs), UI design artboards, and API documentation into structured Markdown files and co-located static assets saved directly into your local project folder (default `<project-root>/specs/{prd,design,api,qa}`, customizable per project) or downloadable `.zip` archives.
 
-We believe strongly in user privacy. **PageSpec does NOT collect, track, or transmit any personal data, browsing history, or document content to any developer-operated servers or third-party analytics services.**
+We believe strongly in user privacy. **PageSpec does NOT collect, sell, track, or transmit any personal data, browsing history, or document content to any developer-operated servers or third-party analytics services.**
 
 ---
 
 ## 2. Data Collection and Usage
 
-- **100% Local Offline Core**: All DOM parsing, image fetching, Markdown generation, section trimming, and incremental diff computation take place entirely locally within your browser's runtime environment.
-- **No Third-Party Analytics or Trackers**: PageSpec contains zero analytics scripts, advertising modules, or telemetry tracking code.
-- **No External AI APIs**: The Extension does not send your documents or code to any external AI model endpoints. Structured Markdown is generated locally for use with your own local tools (e.g., Cursor, Claude Code, Windsurf, or Codex).
-- **Optional Self-Hosted SpecLoop Sync**: Only if you explicitly configure and authorize your own self-hosted **SpecLoop** server URL and opt in to syncing a task or submitting a QA test capture, the Extension sends the chosen payload directly to the server URL you configured. Never is any data sent automatically without your explicit action. When capturing live QA diagnostics on demand, PageSpec collects only the active tab URL, viewport size, and sanitized console/HTTP status summaries (never request bodies, Authorization headers, or cookies).
+- **100% Local Offline Core**: All document extraction, image downloading, Markdown conversion, section trimming, and incremental diff computation run locally inside your browser.
+- **No Analytics, Ads, or Telemetry**: PageSpec contains zero analytics SDKs, advertising scripts, or background tracking code.
+- **No External AI APIs**: PageSpec never sends your documents or source code to external LLM or cloud AI services. Extracted Markdown is saved locally for you to use with your own tools.
+- **No Unprompted Page Instrumentation**: PageSpec never hooks `window.fetch` or `console.error` during normal browsing. Main-world inspection runs strictly on demand when you explicitly scan an API documentation tab or actively use the optional QA Companion tab.
+- **Optional Self-Hosted SpecLoop Integration**: Only if you explicitly enter your own self-hosted **SpecLoop** server URL, authorize an API token, and opt in to syncing a task or submitting a QA test failure, PageSpec transmits the selected specification bundle, QA note, viewport screenshot, and sanitized error summary directly to the server URL you configured. PageSpec never transmits data automatically without your explicit action, and QA diagnostics never collect request bodies, `Authorization` headers, or cookies.
 
 ---
 
-## 3. Chrome Extension Permissions
+## 3. Browser Permissions
 
-PageSpec requests the minimum permissions necessary to perform its core functionality:
+PageSpec requests only the permissions required for its user-initiated features:
 
 | Permission | Purpose |
 | :--- | :--- |
-| `activeTab` | Grants temporary access to the active tab when you click the extension, enabling targeted extraction and optional user-initiated visible viewport capture. |
-| `scripting` | Executes the local extraction scripts inside the active tab and its nested frames. |
-| `storage` | Stores your local preferences (such as the bound project directory handle, `specs/` folder strategy, preferred UI language, and optional SpecLoop endpoint) locally on your device. |
-| `downloads` | Allows saving extracted bundles as a `.zip` file when direct directory write is unsupported or unconfigured. |
-| `webNavigation` | Detects and enumerates iframe hierarchies (e.g., nested Axure or documentation menus) to identify the primary content frame. |
-| `sidePanel` | Allows keeping the PageSpec tool panel open in Chrome's native side panel while navigating documentation. |
-| `host_permissions: ["<all_urls>"]` | Required to permit content extraction on arbitrary web-based documentation portals (such as Tencent Docs, Lanhu, Confluence, Axure, Swagger, etc.) that the user chooses to inspect. |
+| `activeTab` | Grants access to the current active tab when you invoke PageSpec, including user-initiated visible viewport capture in the optional QA Companion. |
+| `scripting` | Executes on-demand page-context inspection strictly when you scan an OpenAPI/Swagger page or actively use the optional QA Companion tab. |
+| `storage` | Persists local preferences on your device (bound folder handle metadata, per-project specs root directory name, UI language, last active tab, and optional user-configured SpecLoop server settings). All preferences stay local (`chrome.storage.local`) and are never synced to developer servers. |
+| `downloads` | Saves extracted Markdown bundles as downloadable `.zip` or `.md` files when direct folder writing is unavailable or not selected. |
+| `webNavigation` | Enumerates iframe hierarchies on the active documentation page (such as nested Axure or wiki layouts) to locate the primary specification content frame. |
+| `sidePanel` | Lets you keep the PageSpec panel open in Chrome's side panel while browsing specifications or running QA checks. |
+| `host_permissions: ["<all_urls>"]` | Required because documentation, design tools, and API portals are hosted across arbitrary public and private/intranet domains chosen by the user. |
 
 ---
 
-## 4. Local Storage and File Access
+## 4. Local Storage, Retention, and Deletion
 
-- **File System Access**: When you explicitly choose to bind a local project directory, the browser grants PageSpec a local directory handle. PageSpec uses this handle strictly to create and write extracted Markdown files, incremental diffs, and assets inside `specs/{prd,design,api,qa}` (or `requirements/` when preserved/configured).
-- **Persistence**: Directory handles and preferences are stored locally in Chrome's extension storage (`browser.storage.local`) and IndexedDB on your machine. You can revoke directory access or disconnect SpecLoop at any time in Settings or via browser extension settings.
+- **Local Project Directory Access**: When you explicitly select a local project folder, your browser grants a local directory handle used strictly to write extracted Markdown files, incremental `.diff.md` files, and co-located `./assets/` inside your chosen specs directory (default `specs/{prd,design,api,qa}`).
+- **Data Retention**: All saved preferences, directory handles, and optional self-hosted SpecLoop tokens remain strictly on your local device until you remove them.
+- **How to Delete Your Data**: You can unbind your local project folder or disconnect SpecLoop at any time inside PageSpec's **Settings** tab, or remove all extension data permanently by uninstalling the Extension from Chrome.
 
 ---
 
 ## 5. Third-Party Websites
 
-When extracting assets (such as prototype images or design artboards), PageSpec requests those assets directly from the original host servers using your existing authenticated session. PageSpec does not relay, intercept, or share website authentication cookies with any third parties.
+When localizing prototype images or design artboards during a user-initiated extraction, PageSpec fetches those media files directly from their original hosting servers using your existing browser session. PageSpec does not share, relay, or store website authentication cookies.
 
 ---
 
 ## 6. Open Source Transparency
 
-PageSpec is completely open-source under the MIT License. The full source code is publicly accessible and auditable on GitHub:  
+PageSpec is licensed under the MIT License. The complete source code is publicly auditable on GitHub:
 [https://github.com/balmjs/page-spec](https://github.com/balmjs/page-spec)
 
 ---
 
-## 7. Contact Us
+## 7. Changes to This Policy
 
-If you have any questions or feedback regarding this Privacy Policy, please open an issue on our GitHub repository:  
-[https://github.com/balmjs/page-spec/issues](https://github.com/balmjs/page-spec/issues)
+If PageSpec's data practices change in a future release, we will update this Privacy Policy and its "Last Updated" date before submitting the new version to the Chrome Web Store.
+
+---
+
+## 8. Contact
+
+For privacy inquiries, data questions, or support:
+
+- **Email:** `support@balmjs.com` *(TODO: replace with your monitored public contact email before Chrome Web Store submission)*
+- **GitHub Issues:** [https://github.com/balmjs/page-spec/issues](https://github.com/balmjs/page-spec/issues)

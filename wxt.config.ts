@@ -8,18 +8,17 @@ export default defineConfig({
   }),
   manifest: ({ browser }) => ({
     name: 'PageSpec',
-    description: 'Extract authenticated web PRDs & API specs into clean Markdown bundles and prototype assets for AI agent coding.',
+    description: 'Extract web PRDs, UI design artboards, and API specs into structured local Markdown bundles for AI coding agents.',
     permissions: [
       'activeTab',
       'storage',
       'downloads',
-      'scripting',
       'webNavigation',
-      ...(browser === 'firefox' ? [] : ['sidePanel']),
+      ...(browser === 'firefox' ? [] : ['scripting', 'sidePanel']),
     ],
     host_permissions: ['<all_urls>'],
     action: {
-      default_title: 'PageSpec - PRD & API Extractor',
+      default_title: 'PageSpec',
       default_popup: 'entrypoints/popup/index.html',
       default_icon: {
         16: '/icons/icon-16.png',
@@ -34,11 +33,5 @@ export default defineConfig({
       48: '/icons/icon-48.png',
       128: '/icons/icon-128.png',
     },
-    web_accessible_resources: [
-      {
-        resources: ['injected.js'],
-        matches: ['<all_urls>'],
-      },
-    ],
   }),
 });

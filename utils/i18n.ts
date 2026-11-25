@@ -8,11 +8,13 @@ export const messages = {
   en: {
     // Header
     offlineBadge: 'Offline',
+    connectedBadge: 'SpecLoop',
+    offlineBadgeTooltip: '100% local offline extraction mode',
+    connectedBadgeTooltip: (url: string) => `Connected to SpecLoop (${url})`,
     detecting: 'Detecting page and frames...',
     unknownHost: 'Unknown Domain',
     currentPage: 'Current Page',
     framesPierced: (n: number) => `Pierced ${n} frames`,
-    singleFrame: 'Single Frame',
     framesTooltip: (total: number, id: number) => `Detected ${total} frames, current target: #${id}`,
     openInSidePanel: 'Open in side panel',
     switchLangTitle: 'Switch to 简体中文',
@@ -41,8 +43,8 @@ export const messages = {
 
     // PRD Panel
     smartPrdTitle: 'Smart PRD Local Extractor',
-    smartPrdDesc:
-      'Preserves current session authentication. Automatically pierces nested menu iframes, targets the core body frame, downloads high-res prototypes concurrently, and saves cleanly to specs/prd/.',
+    smartPrdDesc: (root = 'specs') =>
+      `Preserves current session authentication. Automatically pierces nested menu iframes, targets the core body frame, downloads high-res prototypes concurrently, and saves cleanly to ${root}/prd/.`,
     parseEngine: 'Parsing Engine',
     engineAuto: 'Auto Detect (Recommended)',
     engineTencent: 'Tencent Docs AST (Smart Document)',
@@ -53,7 +55,7 @@ export const messages = {
     btnDownloadZip: 'Download PRD Bundle (.zip)',
     processing: 'Processing...',
     prepPrd: 'Preparing to extract page content and prototype graphics...',
-    writingFiles: 'Writing Markdown and assets to local specs/ directory...',
+    writingFiles: (root = 'specs') => `Writing Markdown and assets to local ${root}/ directory...`,
     successWrite: (path: string) => `Saved to ${path}`,
     successDownload: 'Bundled! Browser download started',
     docTitle: 'Document Title:',
@@ -71,8 +73,8 @@ export const messages = {
 
     // Design Panel
     designTitle: 'UI Design & Artboard Extractor',
-    designDesc:
-      'Detects artboards on Lanhu, MasterGo, Modao, or web design galleries. Strips thumbnail CDN resize params to recover original HD images and saves cleanly to specs/design/.',
+    designDesc: (root = 'specs') =>
+      `Detects artboards on Lanhu, MasterGo, Modao, or web design galleries. Strips thumbnail CDN resize params to recover original HD images and saves cleanly to ${root}/design/.`,
     rescanArtboards: 'Rescan Artboards',
     scanningArtboards: 'Scanning artboards on current page...',
     searchArtboardsPlaceholder: 'Search artboards by name...',
@@ -91,8 +93,8 @@ export const messages = {
     // API Panel
     targetApiFrame: 'Target API Frame:',
     structuredApiTitle: 'Structured API Spec Extractor',
-    structuredApiDesc:
-      'Prioritizes sniffing Swagger / OpenAPI raw JSON specifications to generate high-fidelity Markdown ($ref dereferenced); supports selective endpoint filtering and saves cleanly to specs/api/.',
+    structuredApiDesc: (root = 'specs') =>
+      `Prioritizes sniffing Swagger / OpenAPI raw JSON specifications to generate high-fidelity Markdown ($ref dereferenced); supports selective endpoint filtering and saves cleanly to ${root}/api/.`,
     rescanEndpoints: 'Rescan Endpoints',
     scanningEndpoints: 'Sniffing OpenAPI endpoints...',
     searchEndpointsPlaceholder: 'Filter by path, summary, or method...',
@@ -178,8 +180,8 @@ export const messages = {
 
     // Directory Config Panel
     localDirTitle: 'Local Project Root Folder',
-    localDirDesc:
-      'Pick your project root directory (e.g. my-app/). PageSpec automatically organizes extracted specs into <specs-root>/{prd,design,api,qa} with anti-nesting protection.',
+    localDirDesc: (root = 'specs') =>
+      `Pick your project root directory (e.g. my-app/). PageSpec automatically organizes extracted specs into ${root}/{prd,design,api,qa} with anti-nesting protection.`,
     specsRootLabel: 'Specs Root Directory',
     specsRootScopeProject: (name: string) => `For ${name}`,
     specsRootScopeGlobal: 'Global default',
@@ -216,15 +218,28 @@ export const messages = {
     errExtractFailed: 'Extraction failed. Please refresh the target page and try again.',
     errSelectDirFailed: 'Failed to select directory.',
     errNoSelection: 'Please select at least one item to extract.',
+    errSpecLoopUrlRequired: 'Please enter the SpecLoop server URL first.',
+    errSpecLoopUrlInvalid: 'Invalid server URL. Enter e.g. http://localhost:8080 or https://specloop.yourdomain.com',
+    errSpecLoopAuthOpenFailed: 'Unable to open the authorization page.',
+    errSpecLoopTokenInvalid: 'Token verification failed.',
+    errSpecLoopSyncFailed: 'Sync failed.',
+    errSpecLoopPartialSync: (err: string) => `Saved locally, but SpecLoop sync failed: ${err}`,
+    errQaLoadItems: 'Failed to load QA test list.',
+    errQaUpdateStatus: 'Failed to update test item status.',
+    errQaSubmitFail: 'Failed to submit failure report.',
+    errQaPullBugs: 'Failed to pull QA failures.',
+    qaDefaultFailNote: 'Failed during live QA verification (see screenshot and diagnostic log).',
   },
   'zh-CN': {
     // Header
     offlineBadge: '离线提取',
+    connectedBadge: 'SpecLoop',
+    offlineBadgeTooltip: '100% 本地离线提取模式',
+    connectedBadgeTooltip: (url: string) => `已连接 SpecLoop (${url})`,
     detecting: '正在检测页面与框架...',
     unknownHost: '未知域名',
     currentPage: '当前网页',
     framesPierced: (n: number) => `已穿透 ${n} 框架`,
-    singleFrame: '单框架',
     framesTooltip: (total: number, id: number) => `共检测到 ${total} 个框架，当前选中 frame #${id}`,
     openInSidePanel: '在侧边栏常驻打开',
     switchLangTitle: 'Switch to English',
@@ -253,8 +268,8 @@ export const messages = {
 
     // PRD Panel
     smartPrdTitle: '智能 PRD 本地化提取',
-    smartPrdDesc:
-      '保留当前登录态，自动穿透嵌套菜单 iframe 并抓取高清原型图，自动保存至项目的 specs/prd/ 目录并就近内聚图片资源。',
+    smartPrdDesc: (root = 'specs') =>
+      `保留当前登录态，自动穿透嵌套菜单 iframe 并抓取高清原型图，自动保存至项目的 ${root}/prd/ 目录并就近内聚图片资源。`,
     parseEngine: '解析引擎',
     engineAuto: '自动识别 (推荐)',
     engineTencent: '腾讯文档 AST (智能文档)',
@@ -265,7 +280,7 @@ export const messages = {
     btnDownloadZip: '下载 PRD 压缩包 (.zip)',
     processing: '正在处理中...',
     prepPrd: '准备提取当前页面内容与原型图...',
-    writingFiles: '正在按分层结构写入本地 specs/ 目录...',
+    writingFiles: (root = 'specs') => `正在按分层结构写入本地 ${root}/ 目录...`,
     successWrite: (path: string) => `已写入 ${path}`,
     successDownload: '打包完成！已触发浏览器下载',
     docTitle: '文档标题:',
@@ -283,8 +298,8 @@ export const messages = {
 
     // Design Panel
     designTitle: '蓝湖 / 在线设计稿高保真提取',
-    designDesc:
-      '自动嗅探蓝湖、MasterGo、墨刀等页面的高清画板原图与标注色值，一键自动保存至项目的 specs/design/ 目录。',
+    designDesc: (root = 'specs') =>
+      `自动嗅探蓝湖、MasterGo、墨刀等页面的高清画板原图与标注色值，一键自动保存至项目的 ${root}/design/ 目录。`,
     rescanArtboards: '重新扫描画板',
     scanningArtboards: '正在扫描当前页面设计画板...',
     searchArtboardsPlaceholder: '按画板名称搜索过滤...',
@@ -303,8 +318,8 @@ export const messages = {
     // API Panel
     targetApiFrame: '目标接口框架:',
     structuredApiTitle: '结构化 API 规范提取',
-    structuredApiDesc:
-      '优先嗅探 Swagger / OpenAPI 底层 JSON 直出精简 Markdown（自动解引用 $ref），支持按需勾选接口并自动保存至 specs/api/。',
+    structuredApiDesc: (root = 'specs') =>
+      `优先嗅探 Swagger / OpenAPI 底层 JSON 直出精简 Markdown（自动解引用 $ref），支持按需勾选接口并自动保存至 ${root}/api/。`,
     rescanEndpoints: '重新嗅探接口',
     scanningEndpoints: '正在嗅探 OpenAPI 接口列表...',
     searchEndpointsPlaceholder: '按路径、接口中文名或方法过滤...',
@@ -390,8 +405,8 @@ export const messages = {
 
     // Directory Config Panel
     localDirTitle: '本地项目根目录绑定',
-    localDirDesc:
-      '选择项目根目录（如 my-app/）后，默认自动按 specs/{prd,design,api,qa} 分层归档（支持按项目自定义目录名及多级路径，自带防套娃保护）。',
+    localDirDesc: (root = 'specs') =>
+      `选择项目根目录（如 my-app/）后，自动按 ${root}/{prd,design,api,qa} 分层归档（支持按项目自定义目录名及多级路径，自带防套娃保护）。`,
     specsRootLabel: '规格根目录名',
     specsRootScopeProject: (name: string) => `仅作用于 ${name}`,
     specsRootScopeGlobal: '全局默认',
@@ -428,6 +443,17 @@ export const messages = {
     errExtractFailed: '提取失败，请刷新目标页面后重试',
     errSelectDirFailed: '选择目录失败',
     errNoSelection: '请至少勾选 1 项需要提取的内容',
+    errSpecLoopUrlRequired: '请先输入 SpecLoop 服务地址',
+    errSpecLoopUrlInvalid: '服务地址格式无效，请输入如 http://localhost:8080 或 https://specloop.yourdomain.com',
+    errSpecLoopAuthOpenFailed: '无法打开授权页',
+    errSpecLoopTokenInvalid: 'Token 校验未通过',
+    errSpecLoopSyncFailed: '同步失败',
+    errSpecLoopPartialSync: (err: string) => `本地已保存，但同步 SpecLoop 失败: ${err}`,
+    errQaLoadItems: '加载测试清单失败',
+    errQaUpdateStatus: '更新状态失败',
+    errQaSubmitFail: '提交失败打回记录出错',
+    errQaPullBugs: '拉取失败',
+    qaDefaultFailNote: '实测未通过（详见现场截图与报错日志）',
   },
 };
 

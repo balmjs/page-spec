@@ -193,7 +193,7 @@ async function loadItems() {
     if (res.ok) {
       items.value = res.items;
     } else {
-      errorMsg.value = res.error || '加载测试清单失败';
+      errorMsg.value = res.error || t('errQaLoadItems');
     }
   } catch (err: any) {
     errorMsg.value = err?.message || String(err);
@@ -221,7 +221,7 @@ async function handlePassItem(item: SpecLoopTestItem) {
       }
       emit('refresh-tasks');
     } else {
-      errorMsg.value = res.error || '更新状态失败';
+      errorMsg.value = res.error || t('errQaUpdateStatus');
     }
   } catch (err: any) {
     errorMsg.value = err?.message || String(err);
@@ -246,17 +246,24 @@ async function startCaptureFailure(item: SpecLoopTestItem) {
       capturedBase64.value = capRes.base64 || '';
     }
 
-    // 2. Collect URL, viewport, and recent console/HTTP errors from active tab
+    // 2. Collect URL, viewport, and recent console/HTTP errors from active tab via on-demand MAIN world read
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     if (tabs[0]?.id) {
       try {
-        const diagRes: any = await browser.tabs.sendMessage(
-          tabs[0].id,
-          { type: 'COLLECT_QA_DIAGNOSTICS' },
-          { frameId: 0 }
-        );
+        const diagRes: any = await browser.runtime.sendMessage({
+          type: 'READ_QA_DIAGNOSTICS',
+          tabId: tabs[0].id,
+        });
         if (diagRes?.ok && diagRes.data) {
           capturedDiag.value = diagRes.data;
+        } else {
+          capturedDiag.value = {
+            url: tabs[0].url || '',
+            title: tabs[0].title || '',
+            viewport: '',
+            userAgent: '',
+            errors: [],
+          };
         }
       } catch {
         capturedDiag.value = {
@@ -291,7 +298,7 @@ async function submitCaptureFailure(item: SpecLoopTestItem) {
       taskId: selectedTaskId.value,
       itemId: item.id,
       status: 'failed',
-      testerNote: failNote.value.trim() || '实测未通过（详见现场截图与报错日志）',
+      testerNote: failNote.value.trim() || t('qaDefaultFailNote'),
       screenshotBase64: capturedBase64.value || undefined,
       pageUrl: capturedDiag.value?.url || undefined,
       consoleErrors: capturedDiag.value?.errors || [],
@@ -305,7 +312,7 @@ async function submitCaptureFailure(item: SpecLoopTestItem) {
       setTimeout(() => (statusMsg.value = ''), 3000);
       emit('refresh-tasks');
     } else {
-      errorMsg.value = res.error || '提交失败打回记录出错';
+      errorMsg.value = res.error || t('errQaSubmitFail');
     }
   } catch (err: any) {
     errorMsg.value = err?.message || String(err);
@@ -330,7 +337,7 @@ async function handlePullBugsToLocal() {
       specsRootDir: props.specsRootDir,
     });
     if (!res.ok) {
-      errorMsg.value = res.error || '拉取失败';
+      errorMsg.value = res.error || t('errQaPullBugs');
     } else if (res.failedCount === 0) {
       statusMsg.value = t('qaNoFailedItems');
     } else {

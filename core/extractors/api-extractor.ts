@@ -496,47 +496,15 @@ export function normalizePseudoTables(root: HTMLElement): void {
 }
 
 /**
- * Request OpenAPI spec directly from Main World context via window.postMessage.
+ * Request OpenAPI spec from the active frame's Main World on demand via Background scripting API.
  */
-function requestOpenApiSpecFromMainWorld(timeoutMs = 2000): Promise<any | null> {
-  return new Promise((resolve) => {
-    const requestId = `ps_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    let settled = false;
-
-    const handler = (event: MessageEvent) => {
-      if (
-        event.source !== window ||
-        !event.data ||
-        event.data.source !== 'PAGESPEC_PAGE' ||
-        event.data.type !== 'SNIFF_OPENAPI_SPEC_RESPONSE' ||
-        event.data.requestId !== requestId
-      ) {
-        return;
-      }
-      settled = true;
-      window.removeEventListener('message', handler);
-      clearTimeout(timer);
-      resolve(event.data.spec || null);
-    };
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        window.removeEventListener('message', handler);
-        resolve(null);
-      }
-    }, timeoutMs);
-
-    window.addEventListener('message', handler);
-    window.postMessage(
-      {
-        source: 'PAGESPEC_CONTENT',
-        type: 'SNIFF_OPENAPI_SPEC',
-        requestId,
-      },
-      '*'
-    );
-  });
+async function requestOpenApiSpecFromMainWorld(): Promise<any | null> {
+  try {
+    const res: any = await browser.runtime.sendMessage({ type: 'SNIFF_OPENAPI_IN_FRAME' });
+    return res?.ok ? res.spec || null : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -545,7 +513,7 @@ function requestOpenApiSpecFromMainWorld(timeoutMs = 2000): Promise<any | null> 
 async function sniffRawOpenApiSpec(): Promise<any | null> {
   let foundSpec: any = null;
   try {
-    foundSpec = await requestOpenApiSpecFromMainWorld(1500);
+    foundSpec = await requestOpenApiSpecFromMainWorld();
   } catch {
     // ignore sniffer error
   }

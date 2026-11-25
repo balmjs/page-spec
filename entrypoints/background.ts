@@ -58,14 +58,220 @@ export default defineBackground(() => {
 
     // Open SidePanel
     if (message.type === 'OPEN_SIDEPANEL') {
-      if (typeof chrome !== 'undefined' && 'sidePanel' in chrome && (chrome.sidePanel as any)?.open) {
-        chrome.windows.getCurrent((win: chrome.windows.Window) => {
-          if (win?.id) {
-            (chrome.sidePanel as any).open({ windowId: win.id });
+      (async () => {
+        try {
+          if (typeof chrome !== 'undefined' && 'sidePanel' in chrome && (chrome.sidePanel as any)?.open) {
+            const win = await chrome.windows.getCurrent();
+            if (win?.id) {
+              await (chrome.sidePanel as any).open({ windowId: win.id });
+            }
           }
-        });
-      }
-      sendResponse({ ok: true });
+          sendResponse({ ok: true });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // On-demand MAIN world OpenAPI / Swagger sniffer (runs ONLY when user scans/extracts API tab)
+    if (message.type === 'SNIFF_OPENAPI_IN_FRAME') {
+      const tabId = typeof message.tabId === 'number' ? message.tabId : sender?.tab?.id;
+      const frameId = typeof message.frameId === 'number' ? message.frameId : (sender?.frameId ?? 0);
+      (async () => {
+        if (!tabId || typeof chrome === 'undefined' || !chrome.scripting?.executeScript) {
+          sendResponse({ ok: true, spec: null });
+          return;
+        }
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [frameId] },
+            world: 'MAIN',
+            func: async () => {
+              const w = window as any;
+              try {
+                if (w.ui?.specSelectors?.specJson) {
+                  const specJson = w.ui.specSelectors.specJson();
+                  if (specJson?.toJS) return specJson.toJS();
+                  if (specJson && typeof specJson === 'object' && (specJson.paths || specJson.openapi || specJson.swagger)) {
+                    return specJson;
+                  }
+                }
+                if (typeof w.ui?.spec === 'function') {
+                  const s = w.ui.spec();
+                  if (s?.toJS) return s.toJS();
+                  if (s?.json) return s.json?.toJS ? s.json.toJS() : s.json;
+                  if (s?.paths) return s;
+                }
+                if (w.__REDOC_STATE__?.rawSpec) return w.__REDOC_STATE__.rawSpec;
+                if (w.__redoc_state?.spec?.data) return w.__redoc_state.spec.data;
+                if (w.swaggerUi?.api?.swaggerObject) return w.swaggerUi.api.swaggerObject;
+                const rapidoc = document.querySelector('rapi-doc') as any;
+                if (rapidoc?.resolvedSpec) return rapidoc.resolvedSpec;
+
+                const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+                const specResource = resources
+                  .map((r) => r.name)
+                  .reverse()
+                  .find(
+                    (url) =>
+                      /\/(?:v[23]\/api-docs|swagger\.json|openapi\.json|api-docs\.json)(?:\?.*)?$/i.test(url) &&
+                      !url.includes('swagger-resources')
+                  );
+
+                if (specResource) {
+                  const resp = await fetch(specResource, { credentials: 'include' });
+                  if (resp.ok) {
+                    const data = await resp.json();
+                    if (data && (data.paths || data.openapi || data.swagger)) {
+                      return data;
+                    }
+                  }
+                }
+              } catch {
+                // ignore sniffing errors
+              }
+              return null;
+            },
+          });
+          sendResponse({ ok: true, spec: results?.[0]?.result ?? null });
+        } catch {
+          sendResponse({ ok: true, spec: null });
+        }
+      })();
+      return true;
+    }
+
+    // On-demand QA diagnostic ring buffer installer (runs ONLY when SpecLoop QA Companion is active)
+    if (message.type === 'ARM_QA_DIAGNOSTICS') {
+      const tabId = typeof message.tabId === 'number' ? message.tabId : sender?.tab?.id;
+      (async () => {
+        if (!tabId || typeof chrome === 'undefined' || !chrome.scripting?.executeScript) {
+          sendResponse({ ok: false });
+          return;
+        }
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            world: 'MAIN',
+            func: () => {
+              const MAX_DIAGNOSTICS = 10;
+              const w = window as any;
+              if (w.__PAGESPEC_DIAG_RING__) return true;
+
+              const ring: Array<{ kind: 'console' | 'exception' | 'http'; message: string; timestamp: string }> = [];
+              const pushEntry = (kind: 'console' | 'exception' | 'http', message: string) => {
+                ring.push({
+                  kind,
+                  message: message.slice(0, 320),
+                  timestamp: new Date().toISOString(),
+                });
+                if (ring.length > MAX_DIAGNOSTICS) {
+                  ring.shift();
+                }
+              };
+
+              const origError = console.error;
+              console.error = function (...args: any[]) {
+                try {
+                  const msg = args
+                    .map((a) => {
+                      if (a instanceof Error) return a.stack || a.message;
+                      if (typeof a === 'string') return a;
+                      try {
+                        return JSON.stringify(a);
+                      } catch {
+                        return String(a);
+                      }
+                    })
+                    .join(' ');
+                  pushEntry('console', msg);
+                } catch {
+                  // ignore ring errors
+                }
+                return origError.apply(console, args);
+              };
+
+              window.addEventListener('error', (ev) => {
+                if (ev?.message) {
+                  pushEntry('exception', `${ev.message} (${ev.filename || ''}:${ev.lineno || 0})`);
+                }
+              });
+
+              window.addEventListener('unhandledrejection', (ev) => {
+                const reason = ev?.reason;
+                const msg =
+                  reason instanceof Error ? reason.message : String(reason || 'Unhandled promise rejection');
+                pushEntry('exception', `UnhandledRejection: ${msg}`);
+              });
+
+              const origFetch = window.fetch;
+              if (typeof origFetch === 'function') {
+                window.fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
+                  const started = Date.now();
+                  const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+                  let pathname = '';
+                  try {
+                    const rawUrl =
+                      typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+                    pathname = new URL(rawUrl, window.location.href).pathname;
+                  } catch {
+                    pathname = '[url]';
+                  }
+                  try {
+                    const resp = await origFetch.apply(window, [input, init] as any);
+                    if (resp.status >= 400) {
+                      pushEntry('http', `${method} ${pathname} -> HTTP ${resp.status} (${Date.now() - started}ms)`);
+                    }
+                    return resp;
+                  } catch (err: any) {
+                    pushEntry('http', `${method} ${pathname} -> NETWORK_ERROR (${err?.message || 'failed'})`);
+                    throw err;
+                  }
+                };
+              }
+
+              w.__PAGESPEC_DIAG_RING__ = ring;
+              return true;
+            },
+          });
+          sendResponse({ ok: true });
+        } catch {
+          sendResponse({ ok: false });
+        }
+      })();
+      return true;
+    }
+
+    // Read active tab environment snapshot + QA diagnostic ring buffer on demand
+    if (message.type === 'READ_QA_DIAGNOSTICS') {
+      const tabId = typeof message.tabId === 'number' ? message.tabId : sender?.tab?.id;
+      (async () => {
+        if (!tabId || typeof chrome === 'undefined' || !chrome.scripting?.executeScript) {
+          sendResponse({ ok: false });
+          return;
+        }
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            world: 'MAIN',
+            func: () => {
+              const w = window as any;
+              return {
+                url: window.location.href,
+                title: document.title || '',
+                viewport: `${window.innerWidth}x${window.innerHeight}`,
+                userAgent: navigator.userAgent.slice(0, 140),
+                errors: Array.isArray(w.__PAGESPEC_DIAG_RING__) ? [...w.__PAGESPEC_DIAG_RING__] : [],
+              };
+            },
+          });
+          const data = results?.[0]?.result;
+          sendResponse(data ? { ok: true, data } : { ok: false });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
       return true;
     }
 

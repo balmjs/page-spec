@@ -119,7 +119,12 @@ const isHydrated = ref(false);
 const tabListRef = ref<HTMLElement | null>(null);
 const engineMode = ref<EngineMode>('auto');
 const autoTrimNoise = ref(true);
-const pageTitle = ref('');
+const rawPageTitle = ref('');
+const isTitleLoaded = ref(false);
+const pageTitle = computed(() => {
+  if (rawPageTitle.value) return rawPageTitle.value;
+  return isTitleLoaded.value ? t('currentPage') : t('detecting');
+});
 const pageUrl = ref('');
 const isExtracting = ref(false);
 const progressPercent = ref(0);
@@ -408,15 +413,26 @@ async function refreshSpecLoopWorkspaceData() {
   }
 }
 
+async function armQaDiagnosticsOnTab(explicitTabId?: number) {
+  try {
+    const tabId = explicitTabId || (await getActiveTabId());
+    if (!tabId) return;
+    await browser.runtime.sendMessage({ type: 'ARM_QA_DIAGNOSTICS', tabId });
+  } catch {
+    // ignore on restricted pages (e.g. chrome://)
+  }
+}
+
 async function refreshActiveTabContext() {
   let activeTabId: number | undefined;
   try {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     if (tabs[0]?.id) {
       activeTabId = tabs[0].id;
-      pageTitle.value = tabs[0].title || t('currentPage');
+      rawPageTitle.value = tabs[0].title?.trim() || '';
       pageUrl.value = tabs[0].url || '';
     }
+    isTitleLoaded.value = true;
   } catch (e) {
     console.error('Failed to get active tab:', e);
   }
@@ -427,6 +443,8 @@ async function refreshActiveTabContext() {
       scanDesignArtboards(activeTabId);
     } else if (currentTab.value === 'api') {
       scanApiEndpoints(activeTabId);
+    } else if (currentTab.value === 'qa' && specLoopConnected.value) {
+      armQaDiagnosticsOnTab(activeTabId);
     }
   }
 }
@@ -476,6 +494,24 @@ async function commitSpecsRootInput() {
   }
   specsRootAnnouncement.value = '';
   specsRootInput.value = check.normalized;
+  // Optimistically update in-memory settings so switching tabs reflects the new root immediately
+  if (dirName.value) {
+    const nextOverrides = { ...specsRootSettings.value.projectOverrides };
+    if (check.normalized === specsRootSettings.value.defaultRootDir) {
+      delete nextOverrides[dirName.value];
+    } else {
+      nextOverrides[dirName.value] = check.normalized;
+    }
+    specsRootSettings.value = {
+      defaultRootDir: specsRootSettings.value.defaultRootDir,
+      projectOverrides: nextOverrides,
+    };
+  } else {
+    specsRootSettings.value = {
+      defaultRootDir: check.normalized,
+      projectOverrides: specsRootSettings.value.projectOverrides,
+    };
+  }
   specsRootSettings.value = await saveSpecsRootDir(check.normalized, dirName.value || undefined);
   await refreshSpecsRootConflict(check.normalized);
 }
@@ -534,10 +570,6 @@ onMounted(async () => {
       return null;
     }),
   ]);
-
-  if (!pageTitle.value) {
-    pageTitle.value = t('detecting');
-  }
 
   if (stored?.pagespec_engine_mode) {
     engineMode.value = stored.pagespec_engine_mode as EngineMode;
@@ -615,8 +647,11 @@ watch(autoTrimNoise, (val) => {
   browser.storage.local.set({ pagespec_auto_trim_noise: val });
 });
 
-watch(currentTab, async (tab) => {
+watch(currentTab, async (tab, prevTab) => {
   if (!isHydrated.value) return;
+  if (prevTab === 'dir' && specsRootInput.value !== effectiveSpecsRootDir.value) {
+    await commitSpecsRootInput();
+  }
   persistActiveTab(tab);
   extractionError.value = '';
   if (tab === 'design') {
@@ -624,6 +659,7 @@ watch(currentTab, async (tab) => {
   } else if (tab === 'api') {
     await scanApiEndpoints();
   } else if (tab === 'qa' && specLoopConnected.value) {
+    armQaDiagnosticsOnTab();
     await refreshSpecLoopWorkspaceData();
   }
 });
@@ -664,7 +700,7 @@ async function detectFrames(tabId: number) {
       selectedFrameId.value = res.data.bestFrameId ?? 0;
       designFrameId.value = 0;
       if (res.data.bestTitle) {
-        pageTitle.value = res.data.bestTitle;
+        rawPageTitle.value = res.data.bestTitle;
       }
     }
   } catch (err) {
@@ -782,12 +818,12 @@ async function handleConnectSpecLoop() {
   specLoopConnError.value = '';
   const url = specLoopConfig.value.baseUrl.trim();
   if (!url) {
-    specLoopConnError.value = '请先输入 SpecLoop 服务地址';
+    specLoopConnError.value = t('errSpecLoopUrlRequired');
     return;
   }
   const normalized = normalizeSpecLoopBaseUrl(url);
   if (!normalized) {
-    specLoopConnError.value = '服务地址格式无效，请输入如 http://localhost:8080 或 https://specloop.yourdomain.com';
+    specLoopConnError.value = t('errSpecLoopUrlInvalid');
     return;
   }
   specLoopConfig.value.baseUrl = normalized.baseUrl;
@@ -795,7 +831,7 @@ async function handleConnectSpecLoop() {
   await saveSpecLoopConfig(specLoopConfig.value);
   const res = await startSpecLoopAuthHandshake(normalized.baseUrl);
   if (!res.ok) {
-    specLoopConnError.value = res.error || '无法打开授权页';
+    specLoopConnError.value = res.error || t('errSpecLoopAuthOpenFailed');
   }
 }
 
@@ -810,7 +846,7 @@ async function handleSaveSpecLoopConfig() {
       await saveSpecLoopConfig(specLoopConfig.value);
       await refreshSpecLoopWorkspaceData();
     } else {
-      specLoopConnError.value = verify.error || 'Token 校验未通过';
+      specLoopConnError.value = verify.error || t('errSpecLoopTokenInvalid');
       return;
     }
   }
@@ -847,7 +883,7 @@ async function handlePullFullSpecs() {
       specsRootDir: effectiveSpecsRootDir.value,
     });
     if (!res.ok) {
-      extractionError.value = res.error || '同步失败';
+      extractionError.value = res.error || t('errSpecLoopSyncFailed');
     } else {
       pullSpecsMsg.value = t('pullSpecsSuccess')(
         res.writtenPaths.length,
@@ -977,7 +1013,7 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
     let diffSummary: SpecDiffResult | undefined;
 
     if (mode === 'directory' && targetDir) {
-      progressMessage.value = t('writingFiles');
+      progressMessage.value = t('writingFiles')(effectiveSpecsRootDir.value);
       const writeRes = await writePrdBundleToDirectory(
         targetDir,
         {
@@ -1018,7 +1054,7 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
         specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
         refreshSpecLoopWorkspaceData();
       } else {
-        extractionError.value = `本地已保存，但同步 SpecLoop 失败: ${pushRes.error}`;
+        extractionError.value = t('errSpecLoopPartialSync')(pushRes.error || '');
       }
     }
 
@@ -1098,7 +1134,7 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
     let diffSummary: SpecDiffResult | undefined;
 
     if (mode === 'directory' && targetDir) {
-      progressMessage.value = t('writingFiles');
+      progressMessage.value = t('writingFiles')(effectiveSpecsRootDir.value);
       const writeRes = await writeDesignBundleToDirectory(
         targetDir,
         {
@@ -1142,7 +1178,7 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
         specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
         refreshSpecLoopWorkspaceData();
       } else {
-        extractionError.value = `本地已保存，但同步 SpecLoop 失败: ${pushRes.error}`;
+        extractionError.value = t('errSpecLoopPartialSync')(pushRes.error || '');
       }
     }
 
@@ -1228,7 +1264,7 @@ async function handleExtractApi(mode: 'directory' | 'download') {
     let diffSummary: SpecDiffResult | undefined;
 
     if (mode === 'directory' && targetDir) {
-      progressMessage.value = t('writingFiles');
+      progressMessage.value = t('writingFiles')(effectiveSpecsRootDir.value);
       const writeRes = await writeApiSpecToDirectory(
         targetDir,
         {
@@ -1269,7 +1305,7 @@ async function handleExtractApi(mode: 'directory' | 'download') {
         specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
         refreshSpecLoopWorkspaceData();
       } else {
-        extractionError.value = `本地已保存，但同步 SpecLoop 失败: ${pushRes.error}`;
+        extractionError.value = t('errSpecLoopPartialSync')(pushRes.error || '');
       }
     }
 
@@ -1313,8 +1349,25 @@ function openSidePanel() {
         <div>
           <div class="flex items-center space-x-1.5">
             <h1 class="text-sm font-bold tracking-tight text-slate-900 dark:text-white">PageSpec</h1>
-            <span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
-              {{ t('offlineBadge') }}
+            <span
+              class="inline-flex items-center space-x-1 text-[10px] font-medium px-1.5 py-0.5 rounded border"
+              :class="
+                specLoopConnected
+                  ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800'
+                  : 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-800'
+              "
+              :title="
+                specLoopConnected
+                  ? t('connectedBadgeTooltip')(specLoopConfig.baseUrl)
+                  : t('offlineBadgeTooltip')
+              "
+            >
+              <span
+                v-if="specLoopConnected"
+                class="w-1.5 h-1.5 rounded-full bg-emerald-500 flex-shrink-0"
+                aria-hidden="true"
+              ></span>
+              <span>{{ specLoopConnected ? t('connectedBadge') : t('offlineBadge') }}</span>
             </span>
           </div>
           <p class="text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[190px]" :title="pageTitle">
@@ -1335,13 +1388,12 @@ function openSidePanel() {
         </button>
 
         <div
-          v-if="bestFrame"
-          class="flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium border"
-          :class="bestFrame.totalFrames > 1 ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800' : 'bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700'"
+          v-if="bestFrame && bestFrame.totalFrames > 1 && (currentTab === 'prd' || currentTab === 'design' || currentTab === 'api')"
+          class="flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium border bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800"
           :title="t('framesTooltip')(bestFrame.totalFrames, selectedFrameId)"
         >
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-          <span>{{ bestFrame.totalFrames > 1 ? t('framesPierced')(bestFrame.totalFrames) : t('singleFrame') }}</span>
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-500" aria-hidden="true"></span>
+          <span>{{ t('framesPierced')(bestFrame.totalFrames) }}</span>
         </div>
 
         <button
@@ -1468,7 +1520,7 @@ function openSidePanel() {
               <span>{{ t('smartPrdTitle') }}</span>
             </h2>
             <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              {{ t('smartPrdDesc') }}
+              {{ t('smartPrdDesc')(effectiveSpecsRootDir) }}
             </p>
           </div>
 
@@ -1672,7 +1724,7 @@ function openSidePanel() {
               <span>{{ t('designTitle') }}</span>
             </h2>
             <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              {{ t('designDesc') }}
+              {{ t('designDesc')(effectiveSpecsRootDir) }}
             </p>
           </div>
 
@@ -1846,7 +1898,7 @@ function openSidePanel() {
               <span>{{ t('structuredApiTitle') }}</span>
             </h2>
             <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              {{ t('structuredApiDesc') }}
+              {{ t('structuredApiDesc')(effectiveSpecsRootDir) }}
             </p>
           </div>
 
@@ -1993,7 +2045,7 @@ function openSidePanel() {
             <h2 class="text-xs font-bold text-slate-900 dark:text-white">{{ t('localDirTitle') }}</h2>
           </div>
           <p class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-            {{ t('localDirDesc') }}
+            {{ t('localDirDesc')(effectiveSpecsRootDir) }}
           </p>
 
           <div class="p-3 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 space-y-2">

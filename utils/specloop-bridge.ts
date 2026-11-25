@@ -70,7 +70,8 @@ export interface QaDiagnosticSnapshot {
 
 const STORAGE_KEY = 'pagespec_specloop_config';
 const PENDING_AUTH_KEY = 'pagespec_pending_auth_origin';
-export const PAGESPEC_VERSION = '1.2.0';
+export const PAGESPEC_VERSION =
+  (typeof browser !== 'undefined' && browser.runtime?.getManifest?.()?.version) || '1.2.0';
 
 export function normalizeSpecLoopBaseUrl(raw: string): { baseUrl: string; origin: string } | null {
   const trimmed = (raw || '').trim();
