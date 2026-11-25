@@ -5,6 +5,7 @@
 :root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color-scheme: light dark;
+  --pagespec-accent: #4f46e5;
 }
 
 body {
@@ -14,9 +15,14 @@ body {
   line-height: 1.5;
   background-color: #f8fafc;
   color: #0f172a;
+  accent-color: var(--pagespec-accent);
 }
 
 @media (prefers-color-scheme: dark) {
+  :root {
+    --pagespec-accent: #818cf8;
+  }
+
   body {
     background-color: #090d16;
     color: #f1f5f9;

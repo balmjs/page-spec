@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from 'vue';
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue';
 import {
   FolderArchive,
   Palette,
@@ -9,6 +9,7 @@ import {
   ExternalLink,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   RefreshCw,
   Layers,
   FolderCheck,
@@ -33,10 +34,19 @@ import {
   writeApiSpecToDirectory,
   overwriteMarkdownInDirectory,
   verifyDirectoryPermission,
-  getSpecsRootPreference,
-  saveSpecsRootPreference,
+  getSpecsRootSettings,
+  getEffectiveSpecsRootDir,
+  saveSpecsRootDir,
+  clearProjectSpecsRootOverride,
+  validateSpecsRootDir,
+  inspectSpecsRootConflict,
+  DEFAULT_SPECS_ROOT_DIR,
+  SPECS_ROOT_PRESETS,
+  GLOBAL_ROOT_DIR_STORAGE_KEY,
+  PROJECT_ROOT_OVERRIDES_STORAGE_KEY,
   type SerializableAsset,
-  type SpecsRootDirPreference,
+  type SpecsRootSettings,
+  type SpecsRootConflictReport,
 } from '../utils/filesystem-writer';
 import type { BestFrameResult } from '../entrypoints/background';
 import type { SpecDiffResult } from '../utils/spec-diff';
@@ -76,7 +86,37 @@ const props = defineProps<{
 type ActiveTab = 'prd' | 'design' | 'api' | 'qa' | 'dir';
 export type EngineMode = 'auto' | 'tencent' | 'dom';
 
-const currentTab = ref<ActiveTab>('prd');
+const ACTIVE_TAB_STORAGE_KEY = 'pagespec_active_tab';
+const VALID_TABS: ReadonlySet<ActiveTab> = new Set(['prd', 'design', 'api', 'qa', 'dir']);
+
+function parseStoredTab(raw: unknown): ActiveTab | null {
+  return typeof raw === 'string' && VALID_TABS.has(raw as ActiveTab) ? (raw as ActiveTab) : null;
+}
+
+function readCachedTabSync(): ActiveTab {
+  try {
+    return parseStoredTab(localStorage.getItem(ACTIVE_TAB_STORAGE_KEY)) ?? 'prd';
+  } catch {
+    return 'prd';
+  }
+}
+
+function writeCachedTabSync(tab: ActiveTab) {
+  try {
+    localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, tab);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function persistActiveTab(tab: ActiveTab) {
+  writeCachedTabSync(tab);
+  browser.storage.local.set({ [ACTIVE_TAB_STORAGE_KEY]: tab }).catch(() => {});
+}
+
+const currentTab = ref<ActiveTab>(readCachedTabSync());
+const isHydrated = ref(false);
+const tabListRef = ref<HTMLElement | null>(null);
 const engineMode = ref<EngineMode>('auto');
 const autoTrimNoise = ref(true);
 const pageTitle = ref('');
@@ -92,11 +132,59 @@ const selectedFrameId = ref<number>(0);
 const designFrameId = ref<number>(0);
 const isDetectingFrames = ref(false);
 
-// Local Project Root Directory Handle & Root Strategy
+// Local Project Root Directory Handle & Customizable Specs Root Strategy
 const savedDirHandle = ref<FileSystemDirectoryHandle | null>(null);
 const dirName = ref<string>('');
 const isFsSupported = ref(isFileSystemAccessSupported());
-const rootPreference = ref<SpecsRootDirPreference>('auto');
+const specsRootSettings = ref<SpecsRootSettings>({
+  defaultRootDir: DEFAULT_SPECS_ROOT_DIR,
+  projectOverrides: {},
+});
+const specsRootInput = ref<string>(DEFAULT_SPECS_ROOT_DIR);
+const specsRootTouched = ref(false);
+const specsRootAnnouncement = ref('');
+const specsRootConflict = ref<SpecsRootConflictReport | null>(null);
+
+const effectiveSpecsRootDir = computed(() =>
+  getEffectiveSpecsRootDir(dirName.value || undefined, specsRootSettings.value)
+);
+
+const isProjectOverrideActive = computed(() =>
+  Boolean(dirName.value && specsRootSettings.value.projectOverrides[dirName.value])
+);
+
+const specsRootValidation = computed(() => validateSpecsRootDir(specsRootInput.value));
+const showSpecsRootError = computed(
+  () => specsRootTouched.value && !specsRootValidation.value.valid
+);
+
+const specsRootErrorText = computed(() => {
+  switch (specsRootValidation.value.errorCode) {
+    case 'absolute':
+      return t('specsRootErrAbsolute');
+    case 'traversal':
+      return t('specsRootErrTraversal');
+    case 'reserved_segment':
+      return t('specsRootErrReserved');
+    default:
+      return t('specsRootErrInvalidChars');
+  }
+});
+
+const previewSpecsPath = computed(() => {
+  const root = specsRootValidation.value.valid
+    ? specsRootValidation.value.normalized
+    : effectiveSpecsRootDir.value;
+  if (!dirName.value) {
+    return `${root}/{prd,design,api,qa}`;
+  }
+  const segments = root.split('/');
+  const lastSeg = segments[segments.length - 1] || DEFAULT_SPECS_ROOT_DIR;
+  if (dirName.value.toLowerCase() === lastSeg.toLowerCase()) {
+    return `${dirName.value}/{prd,design,api,qa}`;
+  }
+  return `${dirName.value}/${root}/{prd,design,api,qa}`;
+});
 
 // SpecLoop Optional Config & Dynamic Data
 const specLoopConfig = ref<SpecLoopConfig>({
@@ -200,6 +288,44 @@ const lastApiResult = ref<{
 } | null>(null);
 
 const specLoopConnected = computed(() => isSpecLoopConnected(specLoopConfig.value));
+
+const visibleTabs = computed(() => {
+  const tabs: Array<{ id: ActiveTab; label: string; icon: any }> = [
+    { id: 'prd', label: t('prdTab'), icon: FolderArchive },
+    { id: 'design', label: t('designTab'), icon: Palette },
+    { id: 'api', label: t('apiTab'), icon: Code2 },
+  ];
+  if (specLoopConnected.value) {
+    tabs.push({ id: 'qa', label: t('qaTab'), icon: Bug });
+  }
+  tabs.push({ id: 'dir', label: t('dirTab'), icon: FolderSync });
+  return tabs;
+});
+
+function handleTabListKeydown(e: KeyboardEvent) {
+  const tabs = Array.from(
+    tabListRef.value?.querySelectorAll<HTMLButtonElement>('[role="tab"]') || []
+  );
+  if (tabs.length === 0) return;
+  const currentIndex = tabs.indexOf(document.activeElement as HTMLButtonElement);
+  if (currentIndex === -1) return;
+
+  let nextIndex: number | null = null;
+  if (e.key === 'ArrowRight') {
+    nextIndex = (currentIndex + 1) % tabs.length;
+  } else if (e.key === 'ArrowLeft') {
+    nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+  } else if (e.key === 'Home') {
+    nextIndex = 0;
+  } else if (e.key === 'End') {
+    nextIndex = tabs.length - 1;
+  }
+
+  if (nextIndex !== null) {
+    e.preventDefault();
+    tabs[nextIndex]?.focus();
+  }
+}
 
 const activeHost = computed(() => {
   try {
@@ -326,36 +452,126 @@ function handleRuntimeMessage(msg: any) {
   }
 }
 
+async function refreshSpecsRootConflict(overrideDir?: string) {
+  if (!savedDirHandle.value) {
+    specsRootConflict.value = null;
+    return;
+  }
+  const targetDir = overrideDir ?? effectiveSpecsRootDir.value;
+  specsRootConflict.value = await inspectSpecsRootConflict(savedDirHandle.value, targetDir);
+}
+
+function handleSpecsRootInput() {
+  if (specsRootValidation.value.valid) {
+    specsRootAnnouncement.value = '';
+  }
+}
+
+async function commitSpecsRootInput() {
+  specsRootTouched.value = true;
+  const check = specsRootValidation.value;
+  if (!check.valid) {
+    specsRootAnnouncement.value = `${t('specsRootLabel')}: ${specsRootErrorText.value}`;
+    return;
+  }
+  specsRootAnnouncement.value = '';
+  specsRootInput.value = check.normalized;
+  specsRootSettings.value = await saveSpecsRootDir(check.normalized, dirName.value || undefined);
+  await refreshSpecsRootConflict(check.normalized);
+}
+
+async function applySpecsRootPreset(preset: string) {
+  specsRootInput.value = preset;
+  specsRootTouched.value = false;
+  specsRootAnnouncement.value = '';
+  specsRootSettings.value = await saveSpecsRootDir(preset, dirName.value || undefined);
+  await refreshSpecsRootConflict(preset);
+}
+
+async function handleResetProjectSpecsRoot() {
+  if (!dirName.value) return;
+  specsRootSettings.value = await clearProjectSpecsRootOverride(dirName.value);
+  specsRootInput.value = effectiveSpecsRootDir.value;
+  specsRootTouched.value = false;
+  specsRootAnnouncement.value = '';
+  await refreshSpecsRootConflict();
+}
+
+function handleStorageChanged(
+  changes: Record<string, { newValue?: unknown }>,
+  areaName: string
+) {
+  if (areaName !== 'local') return;
+  const nextTab = parseStoredTab(changes[ACTIVE_TAB_STORAGE_KEY]?.newValue);
+  if (nextTab && nextTab !== currentTab.value) {
+    if (nextTab === 'qa' && !specLoopConnected.value) return;
+    currentTab.value = nextTab;
+    writeCachedTabSync(nextTab);
+  }
+  if (changes[GLOBAL_ROOT_DIR_STORAGE_KEY] || changes[PROJECT_ROOT_OVERRIDES_STORAGE_KEY]) {
+    getSpecsRootSettings().then((settings) => {
+      specsRootSettings.value = settings;
+      specsRootInput.value = effectiveSpecsRootDir.value;
+      specsRootTouched.value = false;
+      refreshSpecsRootConflict();
+    });
+  }
+}
+
 onMounted(async () => {
-  await initLocale();
+  const [, stored, rootSettings, slConfig, savedHandle] = await Promise.all([
+    initLocale(),
+    browser.storage.local
+      .get(['pagespec_engine_mode', 'pagespec_auto_trim_noise', ACTIVE_TAB_STORAGE_KEY])
+      .catch((err) => {
+        console.warn('[PageSpec] Failed to load preferences:', err);
+        return {} as Record<string, any>;
+      }),
+    getSpecsRootSettings(),
+    getSpecLoopConfig(),
+    getSavedRequirementsDirectory().catch((err) => {
+      console.warn('[PageSpec] Failed to load saved directory handle:', err);
+      return null;
+    }),
+  ]);
+
   if (!pageTitle.value) {
     pageTitle.value = t('detecting');
   }
 
-  try {
-    const stored = await browser.storage.local.get(['pagespec_engine_mode', 'pagespec_auto_trim_noise']);
-    if (stored?.pagespec_engine_mode) {
-      engineMode.value = stored.pagespec_engine_mode as EngineMode;
-    }
-    if (typeof stored?.pagespec_auto_trim_noise === 'boolean') {
-      autoTrimNoise.value = stored.pagespec_auto_trim_noise;
-    }
-  } catch (err) {
-    console.warn('[PageSpec] Failed to load preferences:', err);
+  if (stored?.pagespec_engine_mode) {
+    engineMode.value = stored.pagespec_engine_mode as EngineMode;
+  }
+  if (typeof stored?.pagespec_auto_trim_noise === 'boolean') {
+    autoTrimNoise.value = stored.pagespec_auto_trim_noise;
   }
 
-  rootPreference.value = await getSpecsRootPreference();
-  specLoopConfig.value = await getSpecLoopConfig();
-  syncTargetTaskId.value = specLoopConfig.value.defaultTaskId || '';
+  specsRootSettings.value = rootSettings;
+  specLoopConfig.value = slConfig;
+  syncTargetTaskId.value = slConfig.defaultTaskId || '';
 
-  try {
-    const handle = await getSavedRequirementsDirectory();
-    if (handle) {
-      savedDirHandle.value = handle;
-      dirName.value = handle.name;
-    }
-  } catch (err) {
-    console.warn('[PageSpec] Failed to load saved directory handle:', err);
+  if (savedHandle) {
+    savedDirHandle.value = savedHandle;
+    dirName.value = savedHandle.name;
+  }
+  specsRootInput.value = effectiveSpecsRootDir.value;
+
+  const storedTab = parseStoredTab(stored?.[ACTIVE_TAB_STORAGE_KEY]);
+  if (storedTab) {
+    currentTab.value = storedTab;
+  }
+  if (currentTab.value === 'qa' && !specLoopConnected.value) {
+    currentTab.value = 'prd';
+    persistActiveTab('prd');
+  } else {
+    writeCachedTabSync(currentTab.value);
+  }
+
+  await nextTick();
+  isHydrated.value = true;
+
+  if (savedDirHandle.value) {
+    refreshSpecsRootConflict();
   }
 
   if (specLoopConnected.value) {
@@ -365,6 +581,7 @@ onMounted(async () => {
   await refreshActiveTabContext();
 
   browser.runtime.onMessage.addListener(handleRuntimeMessage);
+  browser.storage?.onChanged?.addListener(handleStorageChanged);
   if (browser.tabs?.onActivated) {
     browser.tabs.onActivated.addListener(handleTabActivated);
   }
@@ -376,6 +593,7 @@ onMounted(async () => {
 onUnmounted(() => {
   try {
     browser.runtime.onMessage.removeListener(handleRuntimeMessage);
+    browser.storage?.onChanged?.removeListener(handleStorageChanged);
     if (browser.tabs?.onActivated) {
       browser.tabs.onActivated.removeListener(handleTabActivated);
     }
@@ -388,18 +606,18 @@ onUnmounted(() => {
 });
 
 watch(engineMode, (val) => {
+  if (!isHydrated.value) return;
   browser.storage.local.set({ pagespec_engine_mode: val });
 });
 
 watch(autoTrimNoise, (val) => {
+  if (!isHydrated.value) return;
   browser.storage.local.set({ pagespec_auto_trim_noise: val });
 });
 
-watch(rootPreference, (val) => {
-  saveSpecsRootPreference(val);
-});
-
 watch(currentTab, async (tab) => {
+  if (!isHydrated.value) return;
+  persistActiveTab(tab);
   extractionError.value = '';
   if (tab === 'design') {
     await scanDesignArtboards();
@@ -423,6 +641,7 @@ watch(designFrameId, () => {
 });
 
 watch(specLoopConnected, (isConn) => {
+  if (!isHydrated.value) return;
   if (!isConn && currentTab.value === 'qa') {
     currentTab.value = 'prd';
   }
@@ -518,11 +737,16 @@ async function ensureTargetDirectoryReady(): Promise<FileSystemDirectoryHandle> 
     targetDir = await pickRequirementsDirectory();
     savedDirHandle.value = targetDir;
     dirName.value = targetDir.name;
+    specsRootInput.value = effectiveSpecsRootDir.value;
+    specsRootTouched.value = false;
+    specsRootAnnouncement.value = '';
+    refreshSpecsRootConflict();
   } else {
     const hasPerm = await verifyDirectoryPermission(targetDir);
     if (!hasPerm) {
       throw new Error(t('errPermDenied'));
     }
+    refreshSpecsRootConflict();
   }
   return targetDir;
 }
@@ -533,6 +757,10 @@ async function handleSelectDirectory() {
     const handle = await pickRequirementsDirectory();
     savedDirHandle.value = handle;
     dirName.value = handle.name;
+    specsRootInput.value = effectiveSpecsRootDir.value;
+    specsRootTouched.value = false;
+    specsRootAnnouncement.value = '';
+    await refreshSpecsRootConflict();
   } catch (err: any) {
     if (err.name !== 'AbortError') {
       extractionError.value = err?.message || t('errSelectDirFailed');
@@ -544,6 +772,10 @@ async function handleClearDirectory() {
   await removeSavedRequirementsDirectory();
   savedDirHandle.value = null;
   dirName.value = '';
+  specsRootInput.value = effectiveSpecsRootDir.value;
+  specsRootTouched.value = false;
+  specsRootAnnouncement.value = '';
+  specsRootConflict.value = null;
 }
 
 async function handleConnectSpecLoop() {
@@ -612,12 +844,15 @@ async function handlePullFullSpecs() {
       dirHandle: targetDir,
       config: specLoopConfig.value,
       taskId: pullTaskId.value,
-      preference: rootPreference.value,
+      specsRootDir: effectiveSpecsRootDir.value,
     });
     if (!res.ok) {
       extractionError.value = res.error || '同步失败';
     } else {
-      pullSpecsMsg.value = t('pullSpecsSuccess')(res.writtenPaths.length, res.resolvedRootName || 'specs');
+      pullSpecsMsg.value = t('pullSpecsSuccess')(
+        res.writtenPaths.length,
+        res.resolvedRootName || effectiveSpecsRootDir.value
+      );
       pullSpecsPrompt.value = res.prompt || '';
     }
   } catch (err: any) {
@@ -654,7 +889,7 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
           `${lastPrdResult.value.sanitizedTitle}.md`,
           trimmedMarkdown,
           'prd',
-          rootPreference.value
+          effectiveSpecsRootDir.value
         );
       } else {
         await navigator.clipboard.writeText(trimmedMarkdown);
@@ -668,7 +903,7 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
           `${lastDesignResult.value.sanitizedTitle}.md`,
           trimmedMarkdown,
           'design',
-          rootPreference.value
+          effectiveSpecsRootDir.value
         );
       } else {
         await navigator.clipboard.writeText(trimmedMarkdown);
@@ -682,7 +917,7 @@ async function handleApplyTrim(kind: 'prd' | 'design' | 'api', trimmedMarkdown: 
           `${lastApiResult.value.sanitizedTitle}.md`,
           trimmedMarkdown,
           'api',
-          rootPreference.value
+          effectiveSpecsRootDir.value
         );
       } else {
         await navigator.clipboard.writeText(trimmedMarkdown);
@@ -736,8 +971,8 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
     }
 
     const rawRes = res.bundle || res.data?.bundle || res;
-    let displayRelativeDir = 'specs/prd';
-    let relativeMdPath = `specs/prd/${rawRes.sanitizedTitle}.md`;
+    let displayRelativeDir = `${effectiveSpecsRootDir.value}/prd`;
+    let relativeMdPath = `${effectiveSpecsRootDir.value}/prd/${rawRes.sanitizedTitle}.md`;
     let diffFilename: string | undefined;
     let diffSummary: SpecDiffResult | undefined;
 
@@ -751,7 +986,7 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
           markdown: rawRes.markdown,
           assets: rawRes.assets || [],
         },
-        rootPreference.value
+        effectiveSpecsRootDir.value
       );
       displayRelativeDir = writeRes.displayRelativeDir;
       relativeMdPath = writeRes.relativeMdPath;
@@ -857,8 +1092,8 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
       throw new Error(res?.error || t('errExtractFailed'));
     }
 
-    let displayRelativeDir = 'specs/design';
-    let relativeMdPath = `specs/design/${res.sanitizedTitle}.md`;
+    let displayRelativeDir = `${effectiveSpecsRootDir.value}/design`;
+    let relativeMdPath = `${effectiveSpecsRootDir.value}/design/${res.sanitizedTitle}.md`;
     let diffFilename: string | undefined;
     let diffSummary: SpecDiffResult | undefined;
 
@@ -872,7 +1107,7 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
           markdown: res.markdown,
           assets: res.assets || [],
         },
-        rootPreference.value
+        effectiveSpecsRootDir.value
       );
       displayRelativeDir = writeRes.displayRelativeDir;
       relativeMdPath = writeRes.relativeMdPath;
@@ -987,8 +1222,8 @@ async function handleExtractApi(mode: 'directory' | 'download') {
     }
 
     const rawRes = res.spec || res.data?.spec || res;
-    let displayRelativeDir = 'specs/api';
-    let relativeMdPath = `specs/api/${rawRes.sanitizedTitle}.md`;
+    let displayRelativeDir = `${effectiveSpecsRootDir.value}/api`;
+    let relativeMdPath = `${effectiveSpecsRootDir.value}/api/${rawRes.sanitizedTitle}.md`;
     let diffFilename: string | undefined;
     let diffSummary: SpecDiffResult | undefined;
 
@@ -1001,7 +1236,7 @@ async function handleExtractApi(mode: 'directory' | 'download') {
           sanitizedTitle: rawRes.sanitizedTitle,
           markdown: rawRes.markdown,
         },
-        rootPreference.value
+        effectiveSpecsRootDir.value
       );
       displayRelativeDir = writeRes.displayRelativeDir;
       relativeMdPath = writeRes.relativeMdPath;
@@ -1063,6 +1298,7 @@ async function handleExtractApi(mode: 'directory' | 'download') {
 }
 
 function openSidePanel() {
+  persistActiveTab(currentTab.value);
   browser.runtime.sendMessage({ type: 'OPEN_SIDEPANEL' });
   window.close();
 }
@@ -1091,7 +1327,7 @@ function openSidePanel() {
         <button
           type="button"
           @click="toggleLocale"
-          class="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-750 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold transition shadow-xs cursor-pointer"
+          class="inline-flex items-center space-x-1 px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/60 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold transition shadow-xs cursor-pointer"
           :title="t('switchLangTitle')"
         >
           <Languages class="w-3.5 h-3.5 text-indigo-500" />
@@ -1121,14 +1357,22 @@ function openSidePanel() {
 
     <!-- Global Directory Status Bar -->
     <div class="px-4 py-2 bg-indigo-50/70 dark:bg-indigo-950/30 border-b border-indigo-100 dark:border-indigo-900/50 flex items-center justify-between text-xs">
-      <div class="flex items-center space-x-1.5 truncate">
+      <div class="flex items-center space-x-1.5 min-w-0">
         <FolderCheck v-if="dirName" class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
         <HardDrive v-else class="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />
         <span class="text-slate-600 dark:text-slate-300 truncate">
           {{ dirName ? t('boundDir')(dirName) : t('unboundDir') }}
         </span>
+        <span
+          v-if="dirName && effectiveSpecsRootDir !== DEFAULT_SPECS_ROOT_DIR"
+          class="px-1.5 py-0.2 rounded bg-indigo-100/80 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 font-mono text-[10px] flex-shrink-0"
+          :title="previewSpecsPath"
+        >
+          {{ effectiveSpecsRootDir }}/
+        </span>
       </div>
       <button
+        type="button"
         @click="currentTab = 'dir'"
         class="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex-shrink-0 ml-2 cursor-pointer"
       >
@@ -1137,51 +1381,26 @@ function openSidePanel() {
     </div>
 
     <!-- Navigation Tabs (QA Tab is strictly invisible unless SpecLoop is connected) -->
-    <nav class="flex border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850 px-2 pt-2">
+    <nav
+      ref="tabListRef"
+      role="tablist"
+      :aria-label="t('tabNavLabel')"
+      class="flex flex-nowrap border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 px-1"
+      @keydown="handleTabListKeydown"
+    >
       <button
-        @click="currentTab = 'prd'"
-        class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
-        :class="currentTab === 'prd' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
+        v-for="tab in visibleTabs"
+        :key="tab.id"
+        :id="`tab-${tab.id}`"
+        type="button"
+        role="tab"
+        :aria-selected="currentTab === tab.id"
+        :tabindex="currentTab === tab.id ? 0 : -1"
+        @click="currentTab = tab.id"
+        class="relative flex-1 min-w-0 flex flex-col items-center justify-center gap-1 py-2 px-1 text-[11px] leading-tight font-semibold whitespace-nowrap transition-colors cursor-pointer text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 aria-selected:text-indigo-600 dark:aria-selected:text-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-indigo-500 after:content-[''] after:absolute after:inset-x-0 after:bottom-0 after:border-b-2 after:border-transparent aria-selected:after:border-indigo-600 dark:aria-selected:after:border-indigo-400"
       >
-        <FolderArchive class="w-3.5 h-3.5" />
-        <span>{{ t('prdTab') }}</span>
-      </button>
-
-      <button
-        @click="currentTab = 'design'"
-        class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
-        :class="currentTab === 'design' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
-      >
-        <Palette class="w-3.5 h-3.5" />
-        <span>{{ t('designTab') }}</span>
-      </button>
-
-      <button
-        @click="currentTab = 'api'"
-        class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
-        :class="currentTab === 'api' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
-      >
-        <Code2 class="w-3.5 h-3.5" />
-        <span>{{ t('apiTab') }}</span>
-      </button>
-
-      <button
-        v-if="specLoopConnected"
-        @click="currentTab = 'qa'"
-        class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
-        :class="currentTab === 'qa' ? 'border-emerald-600 text-emerald-600 dark:text-emerald-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
-      >
-        <Bug class="w-3.5 h-3.5" />
-        <span>{{ t('qaTab') }}</span>
-      </button>
-
-      <button
-        @click="currentTab = 'dir'"
-        class="flex items-center space-x-1 pb-2 px-2.5 border-b-2 text-xs font-semibold transition cursor-pointer"
-        :class="currentTab === 'dir' ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400' : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'"
-      >
-        <FolderSync class="w-3.5 h-3.5" />
-        <span>{{ t('dirTab') }}</span>
+        <component :is="tab.icon" class="w-4 h-4 flex-shrink-0" aria-hidden="true" />
+        <span class="truncate max-w-full">{{ tab.label }}</span>
       </button>
     </nav>
 
@@ -1209,7 +1428,7 @@ function openSidePanel() {
       </div>
 
       <!-- ==================== TAB 1: PRD EXTRACTOR ==================== -->
-      <section v-if="currentTab === 'prd'" class="space-y-4">
+      <section v-if="currentTab === 'prd'" role="tabpanel" aria-labelledby="tab-prd" class="space-y-4">
         <div v-if="bestFrame" class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-xs space-y-2">
           <div class="flex items-center justify-between">
             <span class="text-slate-400 font-medium">{{ t('targetBodyFrame') }}</span>
@@ -1253,7 +1472,7 @@ function openSidePanel() {
             </p>
           </div>
 
-          <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-750 border border-slate-200 dark:border-slate-700 text-xs">
+          <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-700 text-xs">
             <span class="text-slate-500 dark:text-slate-400 font-medium flex items-center space-x-1.5">
               <Sparkles class="w-3.5 h-3.5 text-indigo-500" />
               <span>{{ t('parseEngine') }}</span>
@@ -1288,12 +1507,12 @@ function openSidePanel() {
             </button>
 
             <!-- Opt-in SpecLoop Sync Checkbox (ONLY visible when connected, STRICTLY unchecked by default) -->
-            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
-              <label class="flex items-center space-x-2 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium cursor-pointer">
+            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200/80 dark:border-indigo-900/60 space-y-2">
+              <label class="flex items-center space-x-2 text-[11px] text-indigo-800 dark:text-indigo-300 font-medium cursor-pointer">
                 <input
                   type="checkbox"
                   v-model="syncPrdToSpecLoop"
-                  class="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  class="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                 />
                 <span>{{ t('syncToSpecLoopCheckbox') }}</span>
               </label>
@@ -1341,7 +1560,7 @@ function openSidePanel() {
             <div class="flex justify-between">
               <span class="text-slate-400">{{ t('isolatedPath') }}</span>
               <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px] truncate max-w-[210px]">
-                {{ lastPrdResult.displayRelativeDir || 'specs/prd' }}/
+                {{ lastPrdResult.displayRelativeDir || `${effectiveSpecsRootDir}/prd` }}/
               </span>
             </div>
           </div>
@@ -1373,7 +1592,7 @@ function openSidePanel() {
 
           <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
             <button
-              @click="copyToClipboard(t('aiPromptPrd')(lastPrdResult.relativeMdPath || `specs/prd/${lastPrdResult.sanitizedTitle}.md`, lastPrdResult.sanitizedTitle), 'prompt')"
+              @click="copyToClipboard(t('aiPromptPrd')(lastPrdResult.relativeMdPath || `${effectiveSpecsRootDir}/prd/${lastPrdResult.sanitizedTitle}.md`, lastPrdResult.sanitizedTitle), 'prompt')"
               class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer"
             >
               <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
@@ -1421,7 +1640,7 @@ function openSidePanel() {
       </section>
 
       <!-- ==================== TAB 2: DESIGN ARTBOARDS EXTRACTOR ==================== -->
-      <section v-if="currentTab === 'design'" class="space-y-4">
+      <section v-if="currentTab === 'design'" role="tabpanel" aria-labelledby="tab-design" class="space-y-4">
         <div v-if="bestFrame && bestFrame.frames && bestFrame.frames.length > 1" class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-xs">
           <div class="flex items-center justify-between">
             <span class="text-slate-400">{{ t('switchFrame') }}</span>
@@ -1468,12 +1687,12 @@ function openSidePanel() {
             </button>
 
             <!-- Opt-in SpecLoop Sync Checkbox (ONLY visible when connected, STRICTLY unchecked by default) -->
-            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
-              <label class="flex items-center space-x-2 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium cursor-pointer">
+            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200/80 dark:border-indigo-900/60 space-y-2">
+              <label class="flex items-center space-x-2 text-[11px] text-indigo-800 dark:text-indigo-300 font-medium cursor-pointer">
                 <input
                   type="checkbox"
                   v-model="syncDesignToSpecLoop"
-                  class="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  class="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                 />
                 <span>{{ t('syncToSpecLoopCheckbox') }}</span>
               </label>
@@ -1519,7 +1738,7 @@ function openSidePanel() {
             <div class="flex justify-between">
               <span class="text-slate-400">{{ t('isolatedPath') }}</span>
               <span class="font-mono text-indigo-600 dark:text-indigo-400 text-[11px] truncate max-w-[210px]">
-                {{ lastDesignResult.displayRelativeDir || 'specs/design' }}/
+                {{ lastDesignResult.displayRelativeDir || `${effectiveSpecsRootDir}/design` }}/
               </span>
             </div>
           </div>
@@ -1544,7 +1763,7 @@ function openSidePanel() {
 
           <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
             <button
-              @click="copyToClipboard(t('aiPromptDesign')(lastDesignResult.relativeMdPath || `specs/design/${lastDesignResult.sanitizedTitle}.md`, lastDesignResult.sanitizedTitle), 'prompt')"
+              @click="copyToClipboard(t('aiPromptDesign')(lastDesignResult.relativeMdPath || `${effectiveSpecsRootDir}/design/${lastDesignResult.sanitizedTitle}.md`, lastDesignResult.sanitizedTitle), 'prompt')"
               class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer"
             >
               <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
@@ -1591,7 +1810,7 @@ function openSidePanel() {
       </section>
 
       <!-- ==================== TAB 3: API SPEC EXTRACTOR ==================== -->
-      <section v-if="currentTab === 'api'" class="space-y-4">
+      <section v-if="currentTab === 'api'" role="tabpanel" aria-labelledby="tab-api" class="space-y-4">
         <div v-if="bestFrame" class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm text-xs space-y-2">
           <div class="flex items-center justify-between">
             <span class="text-slate-400 font-medium">{{ t('targetApiFrame') }}</span>
@@ -1642,12 +1861,12 @@ function openSidePanel() {
             </button>
 
             <!-- Opt-in SpecLoop Sync Checkbox (ONLY visible when connected, STRICTLY unchecked by default) -->
-            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/60 space-y-2">
-              <label class="flex items-center space-x-2 text-[11px] text-emerald-800 dark:text-emerald-300 font-medium cursor-pointer">
+            <div v-if="specLoopConnected" class="p-2 rounded-lg bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200/80 dark:border-indigo-900/60 space-y-2">
+              <label class="flex items-center space-x-2 text-[11px] text-indigo-800 dark:text-indigo-300 font-medium cursor-pointer">
                 <input
                   type="checkbox"
                   v-model="syncApiToSpecLoop"
-                  class="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                  class="rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                 />
                 <span>{{ t('syncToSpecLoopCheckbox') }}</span>
               </label>
@@ -1706,7 +1925,7 @@ function openSidePanel() {
 
           <div class="flex space-x-2 pt-1 border-t border-slate-100 dark:border-slate-700/60">
             <button
-              @click="copyToClipboard(t('aiPromptApi')(lastApiResult.relativeMdPath || `specs/api/${lastApiResult.sanitizedTitle}.md`), 'prompt')"
+              @click="copyToClipboard(t('aiPromptApi')(lastApiResult.relativeMdPath || `${effectiveSpecsRootDir}/api/${lastApiResult.sanitizedTitle}.md`), 'prompt')"
               class="flex-1 py-1.5 px-2.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950 dark:hover:bg-indigo-900 text-indigo-600 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer"
             >
               <Check v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-600" />
@@ -1753,19 +1972,20 @@ function openSidePanel() {
       </section>
 
       <!-- ==================== TAB 3.5: LIVE QA COMPANION (CONDITIONAL) ==================== -->
-      <section v-if="currentTab === 'qa' && specLoopConnected">
+      <section v-if="currentTab === 'qa' && specLoopConnected" role="tabpanel" aria-labelledby="tab-qa">
         <QaCompanionPanel
           :spec-loop-config="specLoopConfig"
           :tasks="specLoopTasks"
+          :loading-tasks="isLoadingSpecLoopTasks"
           :saved-dir-handle="savedDirHandle"
-          :root-preference="rootPreference"
+          :specs-root-dir="effectiveSpecsRootDir"
           @refresh-tasks="refreshSpecLoopWorkspaceData()"
           @open-settings="currentTab = 'dir'"
         />
       </section>
 
       <!-- ==================== TAB 4: DIRECTORY & SPECLOOP SETTINGS ==================== -->
-      <section v-if="currentTab === 'dir'" class="space-y-4">
+      <section v-if="currentTab === 'dir'" role="tabpanel" aria-labelledby="tab-dir" class="space-y-4">
         <!-- Local Directory Card -->
         <div class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
           <div class="flex items-center space-x-2">
@@ -1792,18 +2012,114 @@ function openSidePanel() {
             </div>
           </div>
 
-          <div class="text-xs">
-            <label class="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1">
-              {{ t('rootFolderPrefLabel') }}
-            </label>
-            <select
-              v-model="rootPreference"
-              class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
+          <div class="space-y-1.5 text-xs">
+            <div class="flex items-center justify-between gap-2">
+              <label for="specs-root-input" class="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                {{ t('specsRootLabel') }}
+              </label>
+              <div class="flex items-center space-x-1.5 min-w-0">
+                <span
+                  class="px-1.5 py-0.5 rounded text-[10px] font-medium truncate max-w-[140px]"
+                  :class="
+                    isProjectOverrideActive
+                      ? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800'
+                      : 'bg-slate-100 dark:bg-slate-700/80 text-slate-500 dark:text-slate-400'
+                  "
+                  :title="dirName ? t('specsRootScopeProject')(dirName) : t('specsRootScopeGlobal')"
+                >
+                  {{ dirName ? t('specsRootScopeProject')(dirName) : t('specsRootScopeGlobal') }}
+                </span>
+                <button
+                  v-if="isProjectOverrideActive"
+                  type="button"
+                  @click="handleResetProjectSpecsRoot"
+                  class="text-[10px] font-medium text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer flex-shrink-0"
+                >
+                  {{ t('specsRootResetDefault') }}
+                </button>
+              </div>
+            </div>
+
+            <p id="specs-root-hint" class="text-[10px] text-slate-400 dark:text-slate-500 font-mono truncate" :title="previewSpecsPath">
+              {{ t('specsRootHint')(previewSpecsPath) }}
+            </p>
+
+            <input
+              id="specs-root-input"
+              v-model="specsRootInput"
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              :placeholder="t('specsRootPlaceholder')"
+              :aria-invalid="showSpecsRootError ? 'true' : 'false'"
+              :aria-describedby="showSpecsRootError ? 'specs-root-hint specs-root-error' : 'specs-root-hint'"
+              @input="handleSpecsRootInput"
+              @blur="commitSpecsRootInput"
+              @keydown.enter.prevent="commitSpecsRootInput"
+              class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border text-xs font-mono text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 transition"
+              :class="
+                showSpecsRootError
+                  ? 'border-red-400 dark:border-red-600 bg-red-50/40 dark:bg-red-950/20 focus:ring-red-500'
+                  : 'border-slate-200 dark:border-slate-700 focus:ring-indigo-500'
+              "
+            />
+
+            <div
+              v-if="showSpecsRootError"
+              id="specs-root-error"
+              class="flex items-start space-x-1 text-[11px] text-red-600 dark:text-red-400"
             >
-              <option value="auto">{{ t('rootPrefAuto') }}</option>
-              <option value="specs">{{ t('rootPrefSpecs') }}</option>
-              <option value="requirements">{{ t('rootPrefRequirements') }}</option>
-            </select>
+              <AlertCircle class="w-3.5 h-3.5 flex-shrink-0 mt-0.5" aria-hidden="true" />
+              <span>{{ specsRootErrorText }}</span>
+            </div>
+
+            <div aria-live="polite" class="sr-only">{{ specsRootAnnouncement }}</div>
+
+            <div class="flex flex-wrap items-center gap-1 pt-0.5">
+              <button
+                v-for="preset in SPECS_ROOT_PRESETS"
+                :key="preset"
+                type="button"
+                @click="applySpecsRootPreset(preset)"
+                class="px-2 py-0.5 rounded-md font-mono text-[10px] font-medium border transition cursor-pointer"
+                :class="
+                  effectiveSpecsRootDir === preset
+                    ? 'bg-indigo-50 dark:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700'
+                    : 'bg-slate-50 hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'
+                "
+              >
+                {{ preset }}
+              </button>
+            </div>
+
+            <div
+              v-if="specsRootConflict?.status === 'conflict'"
+              class="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 text-amber-800 dark:text-amber-300 text-[11px] space-y-1.5"
+            >
+              <div class="flex items-start space-x-1.5 font-semibold">
+                <AlertTriangle class="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+                <span>{{ t('specsRootConflictTitle')(specsRootConflict.resolvedRootPath) }}</span>
+              </div>
+              <p class="text-[10px] text-amber-700/90 dark:text-amber-300/90 leading-relaxed">
+                {{
+                  t('specsRootConflictDesc')(
+                    specsRootConflict.nonSpecEntries.join(', '),
+                    Math.max(0, specsRootConflict.totalNonSpecCount - specsRootConflict.nonSpecEntries.length)
+                  )
+                }}
+              </p>
+              <div v-if="specsRootConflict.suggestedAlternatives.length > 0" class="flex flex-wrap items-center gap-1">
+                <button
+                  v-for="alt in specsRootConflict.suggestedAlternatives"
+                  :key="alt"
+                  type="button"
+                  @click="applySpecsRootPreset(alt)"
+                  class="px-2 py-0.5 rounded bg-white/90 hover:bg-white dark:bg-slate-900/80 dark:hover:bg-slate-900 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 font-mono text-[10px] font-semibold transition cursor-pointer"
+                >
+                  → {{ alt }}
+                </button>
+              </div>
+            </div>
           </div>
 
           <div class="flex space-x-2 pt-1">
@@ -1829,7 +2145,7 @@ function openSidePanel() {
         <div class="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-3">
           <div class="flex items-center justify-between">
             <div class="flex items-center space-x-2">
-              <Link2 class="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <Link2 class="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
               <h2 class="text-xs font-bold text-slate-900 dark:text-white">{{ t('specLoopSectionTitle') }}</h2>
             </div>
             <span
@@ -1856,7 +2172,7 @@ function openSidePanel() {
                 v-model="specLoopConfig.baseUrl"
                 type="url"
                 :placeholder="t('specLoopUrlPlaceholder')"
-                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
               />
             </div>
 
@@ -1879,7 +2195,7 @@ function openSidePanel() {
               v-else
               type="button"
               @click="handleConnectSpecLoop"
-              class="w-full py-2 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 shadow transition cursor-pointer"
+              class="w-full py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 shadow transition cursor-pointer"
             >
               <Link2 class="w-3.5 h-3.5" />
               <span>{{ t('specLoopConnectBtn') }}</span>
@@ -1922,7 +2238,7 @@ function openSidePanel() {
                 class="w-full py-1.5 px-3 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 font-medium text-[11px] flex items-center justify-center space-x-1.5 transition cursor-pointer disabled:opacity-50"
               >
                 <CloudDownload class="w-3.5 h-3.5" />
-                <span>{{ isPullingSpecs ? t('processing') : t('pullFullSpecsBtn') }}</span>
+                <span>{{ isPullingSpecs ? t('processing') : t('pullFullSpecsBtn')(effectiveSpecsRootDir) }}</span>
               </button>
               <div v-if="pullSpecsMsg" class="p-2 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 text-[11px] space-y-1">
                 <div>✓ {{ pullSpecsMsg }}</div>
@@ -1953,7 +2269,7 @@ function openSidePanel() {
                 <button
                   type="button"
                   @click="handleSaveSpecLoopConfig"
-                  class="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-emerald-600 dark:hover:bg-emerald-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
+                  class="w-full py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-indigo-600 dark:hover:bg-indigo-700 text-white font-medium text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer"
                 >
                   <Check v-if="specLoopSaved" class="w-3.5 h-3.5 text-emerald-300" />
                   <span>{{ specLoopSaved ? t('specLoopSavedNotice') : t('saveSpecLoopBtn') }}</span>
@@ -1969,15 +2285,15 @@ function openSidePanel() {
             <span>{{ t('workflowTitle') }}</span>
           </div>
           <p class="leading-relaxed">
-            {{ t('workflowDesc') }}
+            {{ t('workflowDesc')(effectiveSpecsRootDir) }}
           </p>
-          <pre class="p-2 rounded bg-white dark:bg-slate-900 font-mono text-[10px] text-slate-800 dark:text-slate-200 overflow-x-auto">@specs/prd/feature.md @specs/design/feature.md @specs/api/feature.md</pre>
+          <pre class="p-2 rounded bg-white dark:bg-slate-900 font-mono text-[10px] text-slate-800 dark:text-slate-200 overflow-x-auto">@{{ effectiveSpecsRootDir }}/prd/feature.md @{{ effectiveSpecsRootDir }}/design/feature.md @{{ effectiveSpecsRootDir }}/api/feature.md</pre>
         </div>
       </section>
     </main>
 
     <!-- Footer -->
-    <footer class="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-850 text-[11px] text-slate-400 flex items-center justify-between">
+    <footer class="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-[11px] text-slate-400 flex items-center justify-between">
       <span>{{ t('footerTitle') }}</span>
       <a
         href="https://github.com/balmjs/page-spec"

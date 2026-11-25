@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import {
   CheckCircle2,
   XCircle,
@@ -21,14 +21,14 @@ import {
   type QaDiagnosticSnapshot,
 } from '../utils/specloop-bridge';
 import { pullTaskQaFailuresToLocal } from '../utils/specloop-puller';
-import type { SpecsRootDirPreference } from '../utils/filesystem-writer';
 import { t } from '../utils/i18n';
 
 const props = defineProps<{
   specLoopConfig: SpecLoopConfig;
   tasks: SpecLoopTaskSummary[];
+  loadingTasks?: boolean;
   savedDirHandle: FileSystemDirectoryHandle | null;
-  rootPreference: SpecsRootDirPreference;
+  specsRootDir: string;
 }>();
 
 const emit = defineEmits<{
@@ -36,6 +36,39 @@ const emit = defineEmits<{
   (e: 'open-settings'): void;
 }>();
 
+const QA_TASK_STORAGE_KEY = 'pagespec_qa_selected_task_id';
+
+function readCachedTaskIdSync(): string {
+  try {
+    return localStorage.getItem(QA_TASK_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeCachedTaskIdSync(taskId: string) {
+  try {
+    if (taskId) {
+      localStorage.setItem(QA_TASK_STORAGE_KEY, taskId);
+    } else {
+      localStorage.removeItem(QA_TASK_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function persistSelectedTaskId(taskId: string) {
+  preferredTaskId.value = taskId;
+  writeCachedTaskIdSync(taskId);
+  if (taskId) {
+    browser.storage.local.set({ [QA_TASK_STORAGE_KEY]: taskId }).catch(() => {});
+  } else {
+    browser.storage.local.remove(QA_TASK_STORAGE_KEY).catch(() => {});
+  }
+}
+
+const preferredTaskId = ref(readCachedTaskIdSync());
 const selectedTaskId = ref('');
 const items = ref<SpecLoopTestItem[]>([]);
 const isLoadingItems = ref(false);
@@ -64,22 +97,80 @@ const passRate = computed(() =>
   items.value.length ? Math.round((passedCount.value / items.value.length) * 100) : 0
 );
 
-onMounted(() => {
-  if (!selectedTaskId.value && props.tasks.length > 0) {
-    const qaTask = props.tasks.find((task) => task.currentStage === 'qa_testing') || props.tasks[0];
-    if (qaTask) {
-      selectedTaskId.value = qaTask.id;
+function reconcileSelectedTask(list: SpecLoopTaskSummary[], preferStored = false) {
+  if (list.length === 0) {
+    selectedTaskId.value = '';
+    return;
+  }
+  if (
+    preferStored &&
+    preferredTaskId.value &&
+    list.some((task) => task.id === preferredTaskId.value)
+  ) {
+    selectedTaskId.value = preferredTaskId.value;
+    return;
+  }
+  if (selectedTaskId.value && list.some((task) => task.id === selectedTaskId.value)) {
+    return;
+  }
+  if (preferredTaskId.value && list.some((task) => task.id === preferredTaskId.value)) {
+    selectedTaskId.value = preferredTaskId.value;
+    return;
+  }
+  const qaTask = list.find((task) => task.currentStage === 'qa_testing') || list[0];
+  selectedTaskId.value = qaTask ? qaTask.id : '';
+}
+
+function handleTaskSelectChange() {
+  if (selectedTaskId.value) {
+    persistSelectedTaskId(selectedTaskId.value);
+  }
+}
+
+function handleStorageChanged(
+  changes: Record<string, { newValue?: unknown }>,
+  areaName: string
+) {
+  if (areaName !== 'local') return;
+  const change = changes[QA_TASK_STORAGE_KEY];
+  if (!change) return;
+  const nextId = typeof change.newValue === 'string' ? change.newValue : '';
+  if (nextId && nextId !== preferredTaskId.value) {
+    preferredTaskId.value = nextId;
+    writeCachedTaskIdSync(nextId);
+    reconcileSelectedTask(props.tasks, true);
+  }
+}
+
+onMounted(async () => {
+  try {
+    const stored = await browser.storage.local.get(QA_TASK_STORAGE_KEY);
+    const storedId =
+      typeof stored?.[QA_TASK_STORAGE_KEY] === 'string' ? stored[QA_TASK_STORAGE_KEY] : '';
+    if (storedId) {
+      preferredTaskId.value = storedId;
+      writeCachedTaskIdSync(storedId);
     }
+  } catch {
+    // ignore storage read errors
+  }
+
+  reconcileSelectedTask(props.tasks, true);
+  browser.storage?.onChanged?.addListener(handleStorageChanged);
+});
+
+onUnmounted(() => {
+  try {
+    browser.storage?.onChanged?.removeListener(handleStorageChanged);
+  } catch {
+    // ignore unregister errors
   }
 });
 
 watch(
   () => props.tasks,
   (list) => {
-    if (!selectedTaskId.value && list.length > 0) {
-      const qaTask = list.find((task) => task.currentStage === 'qa_testing') || list[0];
-      if (qaTask) selectedTaskId.value = qaTask.id;
-    }
+    reconcileSelectedTask(list);
   },
   { immediate: true }
 );
@@ -236,7 +327,7 @@ async function handlePullBugsToLocal() {
       dirHandle: props.savedDirHandle,
       config: props.specLoopConfig,
       taskId: selectedTaskId.value,
-      preference: props.rootPreference,
+      specsRootDir: props.specsRootDir,
     });
     if (!res.ok) {
       errorMsg.value = res.error || '拉取失败';
@@ -244,7 +335,7 @@ async function handlePullBugsToLocal() {
       statusMsg.value = t('qaNoFailedItems');
     } else {
       pulledBugPrompt.value = res.prompt || '';
-      statusMsg.value = t('pullQaBugsSuccess')(res.failedCount, res.relativeMdPath || 'specs/qa/');
+      statusMsg.value = t('pullQaBugsSuccess')(res.failedCount, res.relativeMdPath || `${props.specsRootDir}/qa/`);
     }
   } catch (err: any) {
     errorMsg.value = err?.message || String(err);
@@ -267,7 +358,7 @@ async function copyBugPrompt() {
     <div class="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm space-y-2.5">
       <div class="flex items-center justify-between">
         <h2 class="text-xs font-bold text-slate-900 dark:text-white flex items-center space-x-1.5">
-          <Bug class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+          <Bug class="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
           <span>{{ t('qaCompanionTitle') }}</span>
         </h2>
         <button
@@ -276,16 +367,17 @@ async function copyBugPrompt() {
             emit('refresh-tasks');
             loadItems();
           "
-          :disabled="isLoadingItems"
-          class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 cursor-pointer"
+          :disabled="isLoadingItems || loadingTasks"
+          class="p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-500 cursor-pointer disabled:opacity-50"
         >
-          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoadingItems }" />
+          <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': isLoadingItems || loadingTasks }" />
         </button>
       </div>
 
       <select
         v-model="selectedTaskId"
-        class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none cursor-pointer"
+        @change="handleTaskSelectChange"
+        class="w-full px-2.5 py-1.5 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-xs text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
       >
         <option v-if="tasks.length === 0" value="">{{ t('qaNoTasks') }}</option>
         <option v-for="task in tasks" :key="task.id" :value="task.id">
@@ -359,15 +451,25 @@ async function copyBugPrompt() {
       class="w-full py-2 px-3 rounded-lg bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/50 dark:hover:bg-amber-900/50 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 font-medium text-xs flex items-center justify-center space-x-1.5 transition cursor-pointer disabled:opacity-50"
     >
       <Download class="w-3.5 h-3.5" />
-      <span>{{ isPullingBugs ? t('processing') : t('pullQaBugsBtn')(failedCount) }}</span>
+      <span>{{ isPullingBugs ? t('processing') : t('pullQaBugsBtn')(failedCount, specsRootDir) }}</span>
     </button>
 
     <!-- Checklist Items -->
-    <div v-if="items.length === 0 && !isLoadingItems" class="p-4 text-center text-xs text-slate-400 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+    <div
+      v-if="tasks.length === 0 && !loadingTasks && !isLoadingItems"
+      class="p-4 text-center text-xs text-slate-400 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 leading-relaxed"
+    >
+      {{ t('qaNoTasksHint') }}
+    </div>
+
+    <div
+      v-else-if="selectedTaskId && items.length === 0 && !isLoadingItems"
+      class="p-4 text-center text-xs text-slate-400 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700"
+    >
       {{ t('qaNoItems') }}
     </div>
 
-    <div v-else class="space-y-2">
+    <div v-else-if="items.length > 0" class="space-y-2">
       <div
         v-for="item in items"
         :key="item.id"

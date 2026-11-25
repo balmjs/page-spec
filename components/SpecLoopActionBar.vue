@@ -121,7 +121,7 @@ async function handlePushToSpecLoop() {
         type="button"
         @click="handlePushToSpecLoop"
         :disabled="isPushing"
-        class="flex-1 py-1.5 px-2 rounded-lg font-medium text-[11px] flex items-center justify-center space-x-1 transition cursor-pointer disabled:opacity-50 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+        class="flex-1 py-1.5 px-2 rounded-lg font-medium text-[11px] flex items-center justify-center space-x-1 transition cursor-pointer disabled:opacity-50 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800"
       >
         <Send class="w-3.5 h-3.5" />
         <span>{{ isPushing ? t('pushingToSpecLoop') : t('pushToSpecLoop') }}</span>

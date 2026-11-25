@@ -1,8 +1,9 @@
 /**
  * File System Access API helper to save PRD bundles, Design bundles, API specs,
  * and SpecLoop QA bugfix packs directly into categorized local project folders:
- *   <project-root>/specs/{prd,design,api,qa}
- * (auto-creates folders, prevents nested specs/specs, and preserves legacy requirements/ projects)
+ *   <project-root>/<specs-root>/{prd,design,api,qa}
+ * Default <specs-root> is `specs`, customizable per project (including nested relative paths
+ * such as `docs/specs`), with anti-nesting protection and non-destructive conflict probing.
  */
 
 import { base64ToUint8Array } from './dom-helpers';
@@ -10,11 +11,138 @@ import { computeMarkdownSpecDiff, type SpecDiffResult } from './spec-diff';
 
 const DB_NAME = 'pagespec_db';
 const STORE_NAME = 'handles';
+// Keep historical IndexedDB key unchanged so existing users retain their bound folder handle on upgrade.
 const DIR_KEY = 'requirements_directory_handle';
-const ROOT_PREF_STORAGE_KEY = 'pagespec_specs_root_preference';
 
-export type SpecsRootDirPreference = 'auto' | 'specs' | 'requirements';
+export const GLOBAL_ROOT_DIR_STORAGE_KEY = 'pagespec_specs_root_dir';
+export const PROJECT_ROOT_OVERRIDES_STORAGE_KEY = 'pagespec_specs_root_overrides';
+export const DEFAULT_SPECS_ROOT_DIR = 'specs';
+export const SPECS_ROOT_PRESETS = ['specs', 'docs/specs', 'page-specs', '.specs'] as const;
+
 export type SpecCategorySubdir = 'prd' | 'design' | 'api' | 'qa';
+
+const KNOWN_CATEGORY_DIRS: ReadonlySet<string> = new Set(['prd', 'design', 'api', 'qa']);
+const IGNORED_CONFLICT_FILES: ReadonlySet<string> = new Set([
+  '.ds_store',
+  'thumbs.db',
+  'desktop.ini',
+  '.gitkeep',
+  'readme.md',
+]);
+const INVALID_SEGMENT_CHARS = /[<>:"\\|?*\x00-\x1f]/;
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+export interface SpecsRootSettings {
+  defaultRootDir: string;
+  projectOverrides: Record<string, string>;
+}
+
+export type SpecsRootValidationErrorCode =
+  | 'absolute'
+  | 'traversal'
+  | 'invalid_chars'
+  | 'reserved_segment';
+
+export interface SpecsRootValidationResult {
+  valid: boolean;
+  normalized: string;
+  segments: string[];
+  errorCode?: SpecsRootValidationErrorCode;
+}
+
+export interface SpecsRootConflictReport {
+  status: 'clean' | 'pagespec_existing' | 'conflict' | 'permission_needed' | 'invalid';
+  resolvedRootPath: string;
+  nonSpecEntries: string[];
+  totalNonSpecCount: number;
+  suggestedAlternatives: string[];
+}
+
+/**
+ * Validate and normalize a user-specified specs root directory path.
+ * Accepts single folder names (`specs`, `page-specs`, `.specs`) and nested relative paths (`docs/specs`).
+ * Empty input falls back to DEFAULT_SPECS_ROOT_DIR (`specs`).
+ */
+export function validateSpecsRootDir(raw: string): SpecsRootValidationResult {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) {
+    return {
+      valid: true,
+      normalized: DEFAULT_SPECS_ROOT_DIR,
+      segments: [DEFAULT_SPECS_ROOT_DIR],
+    };
+  }
+
+  if (
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('\\') ||
+    trimmed.startsWith('~/') ||
+    /^[a-zA-Z]:/.test(trimmed)
+  ) {
+    return {
+      valid: false,
+      normalized: DEFAULT_SPECS_ROOT_DIR,
+      segments: [DEFAULT_SPECS_ROOT_DIR],
+      errorCode: 'absolute',
+    };
+  }
+
+  const cleaned = trimmed.replace(/^(?:\.\/)+/, '').replace(/\/+$/, '');
+  if (!cleaned) {
+    return {
+      valid: true,
+      normalized: DEFAULT_SPECS_ROOT_DIR,
+      segments: [DEFAULT_SPECS_ROOT_DIR],
+    };
+  }
+
+  const segments = cleaned.split('/');
+  for (const seg of segments) {
+    if (!seg) {
+      return {
+        valid: false,
+        normalized: DEFAULT_SPECS_ROOT_DIR,
+        segments: [DEFAULT_SPECS_ROOT_DIR],
+        errorCode: 'invalid_chars',
+      };
+    }
+    if (seg === '.' || seg === '..') {
+      return {
+        valid: false,
+        normalized: DEFAULT_SPECS_ROOT_DIR,
+        segments: [DEFAULT_SPECS_ROOT_DIR],
+        errorCode: 'traversal',
+      };
+    }
+    if (INVALID_SEGMENT_CHARS.test(seg) || seg.endsWith('.') || seg.endsWith(' ')) {
+      return {
+        valid: false,
+        normalized: DEFAULT_SPECS_ROOT_DIR,
+        segments: [DEFAULT_SPECS_ROOT_DIR],
+        errorCode: 'invalid_chars',
+      };
+    }
+    if (WINDOWS_RESERVED_NAME.test(seg)) {
+      return {
+        valid: false,
+        normalized: DEFAULT_SPECS_ROOT_DIR,
+        segments: [DEFAULT_SPECS_ROOT_DIR],
+        errorCode: 'reserved_segment',
+      };
+    }
+  }
+
+  return {
+    valid: true,
+    normalized: segments.join('/'),
+    segments,
+  };
+}
+
+export function normalizeSpecsRootDir(raw?: string): string {
+  const res = validateSpecsRootDir(raw || '');
+  return res.valid ? res.normalized : DEFAULT_SPECS_ROOT_DIR;
+}
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -31,27 +159,117 @@ function openDatabase(): Promise<IDBDatabase> {
 }
 
 /**
- * Load user preference for specs root folder naming ('auto' | 'specs' | 'requirements').
+ * Load global default specs root directory and per-project overrides.
  */
-export async function getSpecsRootPreference(): Promise<SpecsRootDirPreference> {
+export async function getSpecsRootSettings(): Promise<SpecsRootSettings> {
   try {
-    const stored = await browser.storage.local.get(ROOT_PREF_STORAGE_KEY);
-    const val = stored?.[ROOT_PREF_STORAGE_KEY];
-    if (val === 'specs' || val === 'requirements' || val === 'auto') {
-      return val;
+    const stored = await browser.storage.local.get([
+      GLOBAL_ROOT_DIR_STORAGE_KEY,
+      PROJECT_ROOT_OVERRIDES_STORAGE_KEY,
+    ]);
+    const defaultRootDir = normalizeSpecsRootDir(
+      typeof stored?.[GLOBAL_ROOT_DIR_STORAGE_KEY] === 'string'
+        ? stored[GLOBAL_ROOT_DIR_STORAGE_KEY]
+        : DEFAULT_SPECS_ROOT_DIR
+    );
+    const rawOverrides = stored?.[PROJECT_ROOT_OVERRIDES_STORAGE_KEY];
+    const projectOverrides: Record<string, string> = {};
+    if (rawOverrides && typeof rawOverrides === 'object' && !Array.isArray(rawOverrides)) {
+      for (const [projectName, dirVal] of Object.entries(rawOverrides)) {
+        if (projectName && typeof dirVal === 'string') {
+          const check = validateSpecsRootDir(dirVal);
+          if (check.valid) {
+            projectOverrides[projectName] = check.normalized;
+          }
+        }
+      }
     }
+    return { defaultRootDir, projectOverrides };
   } catch {
-    // ignore storage errors
+    return { defaultRootDir: DEFAULT_SPECS_ROOT_DIR, projectOverrides: {} };
   }
-  return 'auto';
 }
 
-export async function saveSpecsRootPreference(pref: SpecsRootDirPreference): Promise<void> {
+/**
+ * Compute effective specs root directory for a given project name.
+ */
+export function getEffectiveSpecsRootDir(
+  projectName: string | undefined,
+  settings: SpecsRootSettings
+): string {
+  if (projectName && settings.projectOverrides[projectName]) {
+    return settings.projectOverrides[projectName];
+  }
+  return settings.defaultRootDir || DEFAULT_SPECS_ROOT_DIR;
+}
+
+/**
+ * Persist specs root directory:
+ * - If projectName is provided, stores a per-project override (or removes override if matching global default).
+ * - If projectName is omitted, updates the global default root directory.
+ */
+export async function saveSpecsRootDir(
+  rootDir: string,
+  projectName?: string
+): Promise<SpecsRootSettings> {
+  const normalized = normalizeSpecsRootDir(rootDir);
+  const current = await getSpecsRootSettings();
+
+  if (projectName) {
+    const nextOverrides = { ...current.projectOverrides };
+    if (normalized === current.defaultRootDir) {
+      delete nextOverrides[projectName];
+    } else {
+      nextOverrides[projectName] = normalized;
+    }
+    const next: SpecsRootSettings = {
+      defaultRootDir: current.defaultRootDir,
+      projectOverrides: nextOverrides,
+    };
+    try {
+      await browser.storage.local.set({ [PROJECT_ROOT_OVERRIDES_STORAGE_KEY]: nextOverrides });
+    } catch {
+      // ignore storage errors
+    }
+    return next;
+  }
+
+  const next: SpecsRootSettings = {
+    defaultRootDir: normalized,
+    projectOverrides: current.projectOverrides,
+  };
   try {
-    await browser.storage.local.set({ [ROOT_PREF_STORAGE_KEY]: pref });
+    await browser.storage.local.set({ [GLOBAL_ROOT_DIR_STORAGE_KEY]: normalized });
   } catch {
     // ignore storage errors
   }
+  return next;
+}
+
+/**
+ * Remove a per-project override so the project falls back to the global default.
+ */
+export async function clearProjectSpecsRootOverride(
+  projectName: string
+): Promise<SpecsRootSettings> {
+  const current = await getSpecsRootSettings();
+  const nextOverrides = { ...current.projectOverrides };
+  delete nextOverrides[projectName];
+  const next: SpecsRootSettings = {
+    defaultRootDir: current.defaultRootDir,
+    projectOverrides: nextOverrides,
+  };
+  try {
+    await browser.storage.local.set({ [PROJECT_ROOT_OVERRIDES_STORAGE_KEY]: nextOverrides });
+  } catch {
+    // ignore storage errors
+  }
+  return next;
+}
+
+export async function getSpecsRootDirForProject(projectName?: string): Promise<string> {
+  const settings = await getSpecsRootSettings();
+  return getEffectiveSpecsRootDir(projectName, settings);
 }
 
 /**
@@ -62,7 +280,7 @@ export function isFileSystemAccessSupported(): boolean {
 }
 
 /**
- * Prompt the user to select their local project root folder (or an existing specs/requirements folder).
+ * Prompt the user to select their local project root folder (or target specs folder directly).
  */
 export async function pickRequirementsDirectory(): Promise<FileSystemDirectoryHandle> {
   if (!isFileSystemAccessSupported()) {
@@ -105,11 +323,6 @@ export async function getSavedRequirementsDirectory(): Promise<FileSystemDirecto
 
     if (!handle) return null;
 
-    const queryPerm = await (handle as any).queryPermission({ mode: 'readwrite' });
-    if (queryPerm === 'granted') {
-      return handle;
-    }
-
     return handle;
   } catch {
     return null;
@@ -149,52 +362,180 @@ export async function removeSavedRequirementsDirectory(): Promise<void> {
   }
 }
 
-async function directoryExists(
-  parentHandle: FileSystemDirectoryHandle,
-  name: string
-): Promise<boolean> {
-  try {
-    await parentHandle.getDirectoryHandle(name, { create: false });
-    return true;
-  } catch {
-    return false;
+async function inspectTargetSegments(
+  boundHandle: FileSystemDirectoryHandle,
+  segments: string[]
+): Promise<{
+  status: 'clean' | 'pagespec_existing' | 'conflict';
+  nonSpecEntries: string[];
+  totalNonSpecCount: number;
+}> {
+  const lastSegment = segments[segments.length - 1] || DEFAULT_SPECS_ROOT_DIR;
+  let targetHandle: FileSystemDirectoryHandle = boundHandle;
+
+  if (boundHandle.name.toLowerCase() !== lastSegment.toLowerCase()) {
+    for (const seg of segments) {
+      try {
+        targetHandle = await targetHandle.getDirectoryHandle(seg, { create: false });
+      } catch (err: any) {
+        if (err?.name === 'TypeMismatchError') {
+          return {
+            status: 'conflict',
+            nonSpecEntries: [seg],
+            totalNonSpecCount: 1,
+          };
+        }
+        return {
+          status: 'clean',
+          nonSpecEntries: [],
+          totalNonSpecCount: 0,
+        };
+      }
+    }
   }
+
+  let hasKnownCategory = false;
+  const nonSpecEntries: string[] = [];
+  let totalNonSpecCount = 0;
+
+  try {
+    for await (const entry of (targetHandle as any).values()) {
+      const name = String(entry?.name || '');
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (entry.kind === 'directory' && KNOWN_CATEGORY_DIRS.has(lower)) {
+        hasKnownCategory = true;
+        continue;
+      }
+      if (entry.kind === 'file' && IGNORED_CONFLICT_FILES.has(lower)) {
+        continue;
+      }
+      totalNonSpecCount++;
+      if (nonSpecEntries.length < 5) {
+        nonSpecEntries.push(entry.kind === 'directory' ? `${name}/` : name);
+      }
+    }
+  } catch {
+    return { status: 'clean', nonSpecEntries: [], totalNonSpecCount: 0 };
+  }
+
+  if (totalNonSpecCount > 0) {
+    return { status: 'conflict', nonSpecEntries, totalNonSpecCount };
+  }
+  return {
+    status: hasKnownCategory ? 'pagespec_existing' : 'clean',
+    nonSpecEntries: [],
+    totalNonSpecCount: 0,
+  };
+}
+
+/**
+ * Non-destructive read-only probe checking whether `<boundHandle>/<specsRootDir>`
+ * already contains non-PageSpec files/folders (e.g. RSpec / OpenSpec / custom specs).
+ * Never prompts the user for permission; returns `permission_needed` if read permission isn't granted yet.
+ */
+export async function inspectSpecsRootConflict(
+  boundHandle: FileSystemDirectoryHandle,
+  rawRootDir: string
+): Promise<SpecsRootConflictReport> {
+  const validation = validateSpecsRootDir(rawRootDir);
+  if (!validation.valid) {
+    return {
+      status: 'invalid',
+      resolvedRootPath: DEFAULT_SPECS_ROOT_DIR,
+      nonSpecEntries: [],
+      totalNonSpecCount: 0,
+      suggestedAlternatives: [],
+    };
+  }
+
+  try {
+    const readPerm = await (boundHandle as any).queryPermission({ mode: 'read' });
+    if (readPerm !== 'granted') {
+      return {
+        status: 'permission_needed',
+        resolvedRootPath: validation.normalized,
+        nonSpecEntries: [],
+        totalNonSpecCount: 0,
+        suggestedAlternatives: [],
+      };
+    }
+  } catch {
+    return {
+      status: 'permission_needed',
+      resolvedRootPath: validation.normalized,
+      nonSpecEntries: [],
+      totalNonSpecCount: 0,
+      suggestedAlternatives: [],
+    };
+  }
+
+  const probe = await inspectTargetSegments(boundHandle, validation.segments);
+  if (probe.status !== 'conflict') {
+    return {
+      status: probe.status,
+      resolvedRootPath: validation.normalized,
+      nonSpecEntries: [],
+      totalNonSpecCount: 0,
+      suggestedAlternatives: [],
+    };
+  }
+
+  // Filter presets to suggest conflict-free alternatives first
+  const candidatePresets = SPECS_ROOT_PRESETS.filter(
+    (p) => p.toLowerCase() !== validation.normalized.toLowerCase()
+  );
+  const checked = await Promise.all(
+    candidatePresets.map(async (preset) => {
+      const res = await inspectTargetSegments(boundHandle, preset.split('/'));
+      return { preset, isFree: res.status !== 'conflict' };
+    })
+  );
+  const freeAlternatives = checked.filter((c) => c.isFree).map((c) => c.preset);
+
+  return {
+    status: 'conflict',
+    resolvedRootPath: validation.normalized,
+    nonSpecEntries: probe.nonSpecEntries,
+    totalNonSpecCount: probe.totalNonSpecCount,
+    suggestedAlternatives: freeAlternatives.length > 0 ? freeAlternatives : [...candidatePresets],
+  };
 }
 
 export interface ResolvedCategoryDirectory {
   categoryHandle: FileSystemDirectoryHandle;
   specsRootHandle: FileSystemDirectoryHandle;
-  resolvedRootName: string; // e.g. 'specs' or 'requirements'
-  displayRelativeDir: string; // e.g. 'specs/prd'
+  resolvedRootName: string; // e.g. 'specs' or 'docs/specs'
+  displayRelativeDir: string; // e.g. 'specs/prd' or 'docs/specs/prd'
 }
 
 /**
- * Smartly resolve and auto-create <project-root>/{specs|requirements}/{prd|design|api|qa}:
- * - Anti-nesting guard: if user selected `specs/` or `requirements/` itself, use it directly.
- * - Legacy compat: when preference='auto', keep existing `requirements/` if `specs/` does not exist.
+ * Resolve and auto-create `<project-root>/<specs-root>/{prd|design|api|qa}`:
+ * - Supports nested relative root paths (e.g. `docs/specs`, `.specs`, `page-specs`).
+ * - Anti-nesting guard: if the user directly bound the target leaf folder (e.g. `specs/`), uses it directly.
  */
 export async function resolveCategoryDirectory(
   boundHandle: FileSystemDirectoryHandle,
   category: SpecCategorySubdir,
-  preference: SpecsRootDirPreference = 'auto'
+  customRootDir?: string
 ): Promise<ResolvedCategoryDirectory> {
-  const handleNameLower = boundHandle.name.toLowerCase();
+  const normalized = normalizeSpecsRootDir(customRootDir);
+  const segments = normalized.split('/');
+  const lastSegment = segments[segments.length - 1] || DEFAULT_SPECS_ROOT_DIR;
 
   let specsRootHandle: FileSystemDirectoryHandle;
   let resolvedRootName: string;
 
-  if (handleNameLower === 'specs' || handleNameLower === 'requirements') {
+  if (boundHandle.name.toLowerCase() === lastSegment.toLowerCase()) {
     specsRootHandle = boundHandle;
     resolvedRootName = boundHandle.name;
   } else {
-    let targetRootName = preference === 'requirements' ? 'requirements' : 'specs';
-    if (preference === 'auto') {
-      const hasSpecs = await directoryExists(boundHandle, 'specs');
-      const hasLegacyReq = !hasSpecs && (await directoryExists(boundHandle, 'requirements'));
-      targetRootName = hasLegacyReq ? 'requirements' : 'specs';
+    let currentDir = boundHandle;
+    for (const seg of segments) {
+      currentDir = await currentDir.getDirectoryHandle(seg, { create: true });
     }
-    specsRootHandle = await boundHandle.getDirectoryHandle(targetRootName, { create: true });
-    resolvedRootName = targetRootName;
+    specsRootHandle = currentDir;
+    resolvedRootName = normalized;
   }
 
   const categoryHandle = await specsRootHandle.getDirectoryHandle(category, { create: true });
@@ -340,15 +681,15 @@ export async function overwriteMarkdownInDirectory(
   mdFilename: string,
   markdown: string,
   category?: SpecCategorySubdir,
-  preference?: SpecsRootDirPreference
+  specsRootDir?: string
 ): Promise<void> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
   if (category) {
-    const pref = preference ?? (await getSpecsRootPreference());
-    const resolved = await resolveCategoryDirectory(dirHandle, category, pref);
+    const targetRoot = specsRootDir ?? (await getSpecsRootDirForProject(dirHandle.name));
+    const resolved = await resolveCategoryDirectory(dirHandle, category, targetRoot);
     await writeTextFile(resolved.categoryHandle, mdFilename, markdown);
   } else {
     await writeTextFile(dirHandle, mdFilename, markdown);
@@ -356,7 +697,7 @@ export async function overwriteMarkdownInDirectory(
 }
 
 /**
- * Write extracted PRD Markdown and co-located assets into <project-root>/{specs|requirements}/prd/.
+ * Write extracted PRD Markdown and co-located assets into `<project-root>/<specs-root>/prd/`.
  */
 export async function writePrdBundleToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -366,18 +707,18 @@ export async function writePrdBundleToDirectory(
     markdown: string;
     assets: Array<SerializableAsset>;
   },
-  preference?: SpecsRootDirPreference
+  specsRootDir?: string
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
-  const pref = preference ?? (await getSpecsRootPreference());
+  const targetRoot = specsRootDir ?? (await getSpecsRootDirForProject(dirHandle.name));
   const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
     dirHandle,
     'prd',
-    pref
+    targetRoot
   );
 
   const mdFilename = `${payload.sanitizedTitle}.md`;
@@ -405,7 +746,7 @@ export async function writePrdBundleToDirectory(
 }
 
 /**
- * Write extracted Design Spec Markdown and artboard assets into <project-root>/{specs|requirements}/design/.
+ * Write extracted Design Spec Markdown and artboard assets into `<project-root>/<specs-root>/design/`.
  */
 export async function writeDesignBundleToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -415,18 +756,18 @@ export async function writeDesignBundleToDirectory(
     markdown: string;
     assets: Array<SerializableAsset>;
   },
-  preference?: SpecsRootDirPreference
+  specsRootDir?: string
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
-  const pref = preference ?? (await getSpecsRootPreference());
+  const targetRoot = specsRootDir ?? (await getSpecsRootDirForProject(dirHandle.name));
   const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
     dirHandle,
     'design',
-    pref
+    targetRoot
   );
 
   const mdFilename = `${payload.sanitizedTitle}.md`;
@@ -454,7 +795,7 @@ export async function writeDesignBundleToDirectory(
 }
 
 /**
- * Write extracted API Spec into <project-root>/{specs|requirements}/api/.
+ * Write extracted API Spec into `<project-root>/<specs-root>/api/`.
  */
 export async function writeApiSpecToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -463,18 +804,18 @@ export async function writeApiSpecToDirectory(
     sanitizedTitle: string;
     markdown: string;
   },
-  preference?: SpecsRootDirPreference
+  specsRootDir?: string
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
-  const pref = preference ?? (await getSpecsRootPreference());
+  const targetRoot = specsRootDir ?? (await getSpecsRootDirForProject(dirHandle.name));
   const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
     dirHandle,
     'api',
-    pref
+    targetRoot
   );
 
   const mdFilename = `${payload.sanitizedTitle}.md`;
@@ -501,7 +842,7 @@ export async function writeApiSpecToDirectory(
 }
 
 /**
- * Write QA failure bugfix bundle pulled from SpecLoop into <project-root>/{specs|requirements}/qa/.
+ * Write QA failure bugfix bundle pulled from SpecLoop into `<project-root>/<specs-root>/qa/`.
  */
 export async function writeQaFixesBundleToDirectory(
   dirHandle: FileSystemDirectoryHandle,
@@ -511,18 +852,18 @@ export async function writeQaFixesBundleToDirectory(
     markdown: string;
     assets: Array<SerializableAsset>;
   },
-  preference?: SpecsRootDirPreference
+  specsRootDir?: string
 ): Promise<DirectoryWriteResult> {
   const hasPermission = await verifyDirectoryPermission(dirHandle);
   if (!hasPermission) {
     throw new Error('未获得对本地目录的读写权限，请重新授权');
   }
 
-  const pref = preference ?? (await getSpecsRootPreference());
+  const targetRoot = specsRootDir ?? (await getSpecsRootDirForProject(dirHandle.name));
   const { categoryHandle, resolvedRootName, displayRelativeDir } = await resolveCategoryDirectory(
     dirHandle,
     'qa',
-    pref
+    targetRoot
   );
 
   const mdFilename = `${payload.sanitizedTitle}-bugs.md`;

@@ -131,7 +131,7 @@ function clearFiltered() {
         <label
           v-for="item in filteredArtboards"
           :key="item.id"
-          class="flex items-center space-x-2 p-1.5 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer"
+          class="flex items-center space-x-2 p-1.5 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer"
         >
           <input
             type="checkbox"

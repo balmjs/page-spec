@@ -24,9 +24,10 @@ export const messages = {
     setupDir: 'Set Up',
 
     // Tabs
+    tabNavLabel: 'PageSpec sections',
     prdTab: 'PRD',
     designTab: 'Design',
-    apiTab: 'API Spec',
+    apiTab: 'API',
     qaTab: 'QA',
     dirTab: 'Settings',
 
@@ -154,12 +155,13 @@ export const messages = {
     saveSpecLoopBtn: 'Save & Verify Connection',
     specLoopSavedNotice: 'SpecLoop connected & saved',
     pullSpecsTitle: 'Pull Finalized Task Specs to Local Project',
-    pullFullSpecsBtn: 'Sync Task Full Specs -> specs/',
+    pullFullSpecsBtn: (root = 'specs') => `Sync Task Full Specs -> ${root}/`,
     pullSpecsSuccess: (count: number, root: string) => `Synced ${count} spec files into ${root}/`,
 
     // Live QA Companion (Conditional)
     qaCompanionTitle: 'Live QA Companion (SpecLoop)',
     qaNoTasks: 'No active SpecLoop tasks',
+    qaNoTasksHint: 'No active SpecLoop tasks yet. Sync a PRD, Design, or API spec to create one, or click refresh.',
     qaNoItems: 'No QA Test List items yet for this task.',
     qaCaptureFailBtn: 'Fail & Capture Viewport + Errors',
     qaDiagCaptured: (errCount: number, viewport: string) =>
@@ -169,7 +171,7 @@ export const messages = {
     qaFailSubmitted: 'Failure + screenshot sent to SpecLoop!',
     qaUnlockedReleaseNotice: '100% Passed! Ready to approve release in SpecLoop.',
     qaNoFailedItems: 'No failed QA items found for this task.',
-    pullQaBugsBtn: (n: number) => `Pull ${n} Failed QA Bugs -> specs/qa/`,
+    pullQaBugsBtn: (n: number, root = 'specs') => `Pull ${n} Failed QA Bugs -> ${root}/qa/`,
     pullQaBugsSuccess: (n: number, path: string) => `Saved ${n} QA failure bugs to ${path}`,
     copyFixPrompt: 'Copy Bugfix AI Prompt',
     cancelBtn: 'Cancel',
@@ -177,11 +179,22 @@ export const messages = {
     // Directory Config Panel
     localDirTitle: 'Local Project Root Folder',
     localDirDesc:
-      'Pick your project root directory (e.g. my-app/). PageSpec automatically creates specs/{prd,design,api,qa} without polluting your root folder, and automatically preserves legacy requirements/ folders.',
-    rootFolderPrefLabel: 'Specs Folder Strategy',
-    rootPrefAuto: 'Auto (specs/, or existing requirements/)',
-    rootPrefSpecs: 'Always specs/ (Recommended)',
-    rootPrefRequirements: 'Always requirements/',
+      'Pick your project root directory (e.g. my-app/). PageSpec automatically organizes extracted specs into <specs-root>/{prd,design,api,qa} with anti-nesting protection.',
+    specsRootLabel: 'Specs Root Directory',
+    specsRootScopeProject: (name: string) => `For ${name}`,
+    specsRootScopeGlobal: 'Global default',
+    specsRootResetDefault: 'Reset',
+    specsRootHint: (preview: string) => `Output: ${preview} (supports nested paths like docs/specs)`,
+    specsRootPlaceholder: 'specs (or e.g. docs/specs)',
+    specsRootErrAbsolute: 'Use a relative path like specs or docs/specs (no leading / or drive letter).',
+    specsRootErrTraversal: 'Path cannot contain "." or ".." segments. Enter a relative folder like specs or docs/specs.',
+    specsRootErrInvalidChars: 'Contains invalid path characters. Use folder names like specs, docs/specs, or .specs.',
+    specsRootErrReserved: 'Contains a reserved system name. Choose another folder name such as specs or page-specs.',
+    specsRootConflictTitle: (path: string) => `Existing non-PageSpec folder detected at "${path}/"`,
+    specsRootConflictDesc: (entries: string, moreCount: number) =>
+      moreCount > 0
+        ? `Contains ${entries} and ${moreCount} more items. You can still merge into it, or switch to avoid mixing files:`
+        : `Contains ${entries}. You can still merge into it, or switch to avoid mixing files:`,
     currentBinding: 'Bound Project Folder:',
     unbound: '(Not bound yet)',
     browserSupport: 'Browser Support:',
@@ -191,7 +204,7 @@ export const messages = {
     btnReSelectDir: 'Switch Project Folder',
     btnUnbind: 'Unbind',
     workflowTitle: 'Recommended AI Coding Workflow',
-    workflowDesc: 'Auto-organized under specs/{prd,design,api,qa} for instant AI referencing:',
+    workflowDesc: (root = 'specs') => `Auto-organized under ${root}/{prd,design,api,qa} for instant AI referencing:`,
 
     // Footer
     footerTitle: 'PageSpec • Pure Offline Spec Extraction',
@@ -223,11 +236,12 @@ export const messages = {
     setupDir: '前往设置',
 
     // Tabs
-    prdTab: 'PRD 需求',
+    tabNavLabel: '功能模块切换',
+    prdTab: 'PRD',
     designTab: '设计稿',
-    apiTab: 'API 规范',
+    apiTab: 'API',
     qaTab: '实测',
-    dirTab: '目录与配置',
+    dirTab: '配置',
 
     // Frame Card
     targetBodyFrame: '目标正文框架:',
@@ -353,12 +367,13 @@ export const messages = {
     saveSpecLoopBtn: '保存并校验连接',
     specLoopSavedNotice: 'SpecLoop 已连通并保存',
     pullSpecsTitle: '从 SpecLoop 反向同步至本地项目',
-    pullFullSpecsBtn: '同步所选任务全套规格 -> specs/',
+    pullFullSpecsBtn: (root = 'specs') => `同步所选任务全套规格 -> ${root}/`,
     pullSpecsSuccess: (count: number, root: string) => `已同步 ${count} 份规格文档至本地 ${root}/`,
 
     // Live QA Companion (Conditional)
     qaCompanionTitle: '实测抓虫伴侣 (SpecLoop)',
     qaNoTasks: '当前暂无进行中的任务',
+    qaNoTasksHint: '当前暂无进行中的 SpecLoop 任务，可先在 PRD / 设计稿 / API 页同步创建任务，或点击右上角刷新。',
     qaNoItems: '该任务尚未生成测试检验清单。',
     qaCaptureFailBtn: '失败并一键截屏抓报错',
     qaDiagCaptured: (errCount: number, viewport: string) =>
@@ -368,7 +383,7 @@ export const messages = {
     qaFailSubmitted: '已自动上传现场截图与报错日志并通知开发！',
     qaUnlockedReleaseNotice: '测试清单已 100% 通过！可前往 SpecLoop 点击放行发布。',
     qaNoFailedItems: '该任务目前没有未通过的测试项。',
-    pullQaBugsBtn: (n: number) => `一键拉取 ${n} 条打回 Bug -> specs/qa/`,
+    pullQaBugsBtn: (n: number, root = 'specs') => `一键拉取 ${n} 条打回 Bug -> ${root}/qa/`,
     pullQaBugsSuccess: (n: number, path: string) => `已将 ${n} 条打回记录与截图写入 ${path}`,
     copyFixPrompt: '复制修复 AI 提示词',
     cancelBtn: '取消',
@@ -376,11 +391,22 @@ export const messages = {
     // Directory Config Panel
     localDirTitle: '本地项目根目录绑定',
     localDirDesc:
-      '直接选择你的项目根目录（如 my-app/）即可！保存时自动创建 specs/{prd,design,api,qa} 分层目录（若老项目已有 requirements/ 自动兼容沿用，绝不套娃）。',
-    rootFolderPrefLabel: '规格根目录策略',
-    rootPrefAuto: '智能识别（默认 specs/，兼容已有 requirements/）',
-    rootPrefSpecs: '强制使用 specs/（推荐）',
-    rootPrefRequirements: '强制使用 requirements/',
+      '选择项目根目录（如 my-app/）后，默认自动按 specs/{prd,design,api,qa} 分层归档（支持按项目自定义目录名及多级路径，自带防套娃保护）。',
+    specsRootLabel: '规格根目录名',
+    specsRootScopeProject: (name: string) => `仅作用于 ${name}`,
+    specsRootScopeGlobal: '全局默认',
+    specsRootResetDefault: '恢复默认',
+    specsRootHint: (preview: string) => `落盘预览：${preview}（支持多级如 docs/specs，留空默认 specs）`,
+    specsRootPlaceholder: 'specs（或 docs/specs）',
+    specsRootErrAbsolute: '请输入相对路径（如 specs 或 docs/specs），不能以 / 或盘符开头。',
+    specsRootErrTraversal: '路径不能包含 "." 或 ".."，请使用 specs、docs/specs 等相对目录。',
+    specsRootErrInvalidChars: '包含非法路径字符，请使用如 specs、docs/specs 或 .specs 的目录名。',
+    specsRootErrReserved: '包含系统保留目录名，请更换为 specs 或 page-specs 等名称。',
+    specsRootConflictTitle: (path: string) => `检测到已有非 PageSpec 目录 "${path}/"`,
+    specsRootConflictDesc: (entries: string, moreCount: number) =>
+      moreCount > 0
+        ? `内含 ${entries} 等共多处非规格文件。可继续合并写入，或一键改名避让：`
+        : `内含 ${entries}。可继续合并写入，或一键改名避让：`,
     currentBinding: '当前绑定工程:',
     unbound: '（尚未绑定）',
     browserSupport: '浏览器支持:',
@@ -390,7 +416,7 @@ export const messages = {
     btnReSelectDir: '切换项目文件夹',
     btnUnbind: '解除绑定',
     workflowTitle: 'AI Coding 推荐工作流',
-    workflowDesc: '自动归类至 specs/{prd,design,api,qa}，在 Cursor / Claude Code 中直接引用：',
+    workflowDesc: (root = 'specs') => `自动归类至 ${root}/{prd,design,api,qa}，在 Cursor / Claude Code 中直接引用：`,
 
     // Footer
     footerTitle: 'PageSpec • 纯离线需求与设计提取',

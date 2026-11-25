@@ -38,7 +38,7 @@ const stageBadgeMap: Record<string, string> = {
       <select
         :value="modelValue"
         @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
-        class="flex-1 min-w-0 px-2 py-1 rounded-md bg-white dark:bg-slate-900 border border-emerald-200 dark:border-emerald-800/80 text-[11px] text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer"
+        class="flex-1 min-w-0 px-2 py-1 rounded-md bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800/80 text-[11px] text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
       >
         <option value="">
           ✨ {{ t('createNewSpecLoopTask')(currentTitle ? currentTitle.slice(0, 22) : '') }}

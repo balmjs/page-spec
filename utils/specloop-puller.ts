@@ -9,8 +9,8 @@ import {
   writeDesignBundleToDirectory,
   writeApiSpecToDirectory,
   writeQaFixesBundleToDirectory,
+  normalizeSpecsRootDir,
   type SerializableAsset,
-  type SpecsRootDirPreference,
 } from './filesystem-writer';
 import { specLoopApiRequest, type SpecLoopConfig } from './specloop-bridge';
 
@@ -65,7 +65,7 @@ export async function pullTaskFullSpecsToLocal(params: {
   dirHandle: FileSystemDirectoryHandle;
   config: SpecLoopConfig;
   taskId: string;
-  preference?: SpecsRootDirPreference;
+  specsRootDir?: string;
 }): Promise<PullFullSpecsResult> {
   const res = await specLoopApiRequest<RemoteSpecPayload>({
     config: params.config,
@@ -85,7 +85,7 @@ export async function pullTaskFullSpecsToLocal(params: {
   const payload = res.data;
   const writtenPaths: string[] = [];
   let assetsWritten = 0;
-  let resolvedRootName = 'specs';
+  let resolvedRootName = normalizeSpecsRootDir(params.specsRootDir);
 
   if (payload.prd?.markdown?.trim()) {
     const r = await writePrdBundleToDirectory(
@@ -96,7 +96,7 @@ export async function pullTaskFullSpecsToLocal(params: {
         markdown: payload.prd.markdown,
         assets: payload.prd.assets || [],
       },
-      params.preference
+      params.specsRootDir
     );
     writtenPaths.push(r.relativeMdPath);
     assetsWritten += r.assetsWritten;
@@ -112,7 +112,7 @@ export async function pullTaskFullSpecsToLocal(params: {
         markdown: payload.design.markdown,
         assets: payload.design.assets || [],
       },
-      params.preference
+      params.specsRootDir
     );
     writtenPaths.push(r.relativeMdPath);
     assetsWritten += r.assetsWritten;
@@ -127,7 +127,7 @@ export async function pullTaskFullSpecsToLocal(params: {
         sanitizedTitle: payload.sanitizedTitle,
         markdown: payload.api.markdown,
       },
-      params.preference
+      params.specsRootDir
     );
     writtenPaths.push(r.relativeMdPath);
     resolvedRootName = r.resolvedRootName;
@@ -154,7 +154,7 @@ export async function pullTaskQaFailuresToLocal(params: {
   dirHandle: FileSystemDirectoryHandle;
   config: SpecLoopConfig;
   taskId: string;
-  preference?: SpecsRootDirPreference;
+  specsRootDir?: string;
 }): Promise<PullQaFailuresResult> {
   const res = await specLoopApiRequest<RemoteQaFailuresPayload>({
     config: params.config,
@@ -188,7 +188,7 @@ export async function pullTaskQaFailuresToLocal(params: {
       markdown: payload.markdown,
       assets: payload.assets || [],
     },
-    params.preference
+    params.specsRootDir
   );
 
   const prompt = `@${r.relativeMdPath} @${r.resolvedRootName}/prd/${payload.sanitizedTitle}.md 请逐条排查并修复测试打回的失败项（结合 ${r.displayRelativeDir}/assets/${payload.sanitizedTitle}/ 下的报错截图与控制台日志）。`;

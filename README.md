@@ -19,7 +19,7 @@
 
 **PageSpec** is a developer-centric browser extension engineered to penetrate complex, nested, or cross-origin iframe requirement pages (Tencent Docs, WeChat SmartPages, Axure, Lanhu, MasterGo, Feishu/Lark, Yuque, Confluence, Swagger/OpenAPI, etc.).
 
-Simply bind your local project root folder once—PageSpec extracts authenticated web content into structured **Markdown** bundles and co-located high-resolution assets directly inside **`specs/{prd,design,api,qa}`** (auto-created with anti-nesting protection and automatic fallback compatibility for legacy `requirements/` folders)—**100% locally and offline**, empowering Agentic Coding in **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
+Simply bind your local project root folder once—PageSpec extracts authenticated web content into structured **Markdown** bundles and co-located high-resolution assets directly inside **`specs/{prd,design,api,qa}`** (auto-created with anti-nesting protection, customizable per-project root naming such as `docs/specs`, and automatic conflict detection)—**100% locally and offline**, empowering Agentic Coding in **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
 
 ---
 
@@ -36,7 +36,7 @@ Simply bind your local project root folder once—PageSpec extracts authenticate
 - **Selective Artboard Picker**: Search and check only the artboards needed for your current feature task, capturing visible design annotations and color tokens into `specs/design/<title>.md` + `./assets/<title>/design-xxx.<ext>`.
 
 ### 3. ⚡ Categorized `specs/` Sync, Incremental Diff & Section Trimming
-- **Smart Root Auto-Organization (`specs/{prd,design,api,qa}`)**: Select your project root folder (e.g., `my-app/`) and PageSpec automatically creates `specs/prd/`, `specs/design/`, and `specs/api/` without polluting your project root. Prevents accidental `specs/specs/` nesting and auto-preserves existing `requirements/` directories if present (configurable in Settings).
+- **Smart Root Auto-Organization (`specs/{prd,design,api,qa}`)**: Select your project root folder (e.g., `my-app/`) and PageSpec automatically creates `specs/prd/`, `specs/design/`, and `specs/api/` without polluting your project root. Prevents accidental nesting, supports customizable root directory names or nested relative paths (e.g., `docs/specs`, `page-specs`, `.specs`) remembered per project, and detects existing non-PageSpec `specs/` folders with one-click switching.
 - **Automatic Incremental Spec Diff**: When re-extracting an updated PRD, Design, or API doc over an existing local file, PageSpec computes section- & line-level changes and emits `<title>.diff.md` along with a one-click incremental AI prompt.
 - **Interactive Section Trimmer**: Automatically skips noisy sections (e.g., *Revision History* / *Changelog*) and provides a collapsible section tree to prune unwanted headings and overwrite locally.
 

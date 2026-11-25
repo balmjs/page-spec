@@ -151,7 +151,7 @@ function methodBadgeClass(method: string): string {
         <label
           v-for="ep in filteredEndpoints"
           :key="ep.key"
-          class="flex items-start space-x-2 p-1.5 hover:bg-slate-50 dark:hover:bg-slate-750 cursor-pointer"
+          class="flex items-start space-x-2 p-1.5 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer"
         >
           <input
             type="checkbox"
