@@ -2,7 +2,41 @@ import { ref } from 'vue';
 
 export type Locale = 'en' | 'zh-CN';
 
-export const currentLocale = ref<Locale>('en');
+function syncDocumentLang(locale: Locale): void {
+  if (typeof document !== 'undefined' && document.documentElement) {
+    document.documentElement.lang = locale;
+  }
+}
+
+export function resolveLocaleFromLanguage(rawLang?: string | null): Locale {
+  const normalized = (rawLang || '').trim().toLowerCase();
+  if (normalized.startsWith('zh')) {
+    return 'zh-CN';
+  }
+  return 'en';
+}
+
+export function detectBrowserLocale(): Locale {
+  let rawLang = '';
+  try {
+    if (typeof browser !== 'undefined' && browser.i18n?.getUILanguage) {
+      rawLang = browser.i18n.getUILanguage();
+    }
+  } catch {}
+  if (!rawLang) {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.i18n?.getUILanguage) {
+        rawLang = chrome.i18n.getUILanguage();
+      }
+    } catch {}
+  }
+  if (!rawLang && typeof navigator !== 'undefined') {
+    rawLang = navigator.language || navigator.languages?.[0] || '';
+  }
+  return resolveLocaleFromLanguage(rawLang);
+}
+
+export const currentLocale = ref<Locale>(detectBrowserLocale());
 
 export const messages = {
   en: {
@@ -460,23 +494,23 @@ export const messages = {
 export async function initLocale(): Promise<Locale> {
   try {
     const stored = await browser.storage.local.get('pagespec_locale');
-    if (stored && stored.pagespec_locale) {
-      currentLocale.value = stored.pagespec_locale as Locale;
+    const saved = stored?.pagespec_locale;
+    if (saved === 'zh-CN' || saved === 'en') {
+      currentLocale.value = saved;
+      syncDocumentLang(saved);
       return currentLocale.value;
     }
   } catch {}
 
-  const rawLang =
-    (typeof chrome !== 'undefined' && chrome.i18n?.getUILanguage?.()) ||
-    (typeof navigator !== 'undefined' && navigator.language) ||
-    'en';
-
-  currentLocale.value = rawLang.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+  const detected = detectBrowserLocale();
+  currentLocale.value = detected;
+  syncDocumentLang(detected);
   return currentLocale.value;
 }
 
 export async function setLocale(lang: Locale): Promise<void> {
   currentLocale.value = lang;
+  syncDocumentLang(lang);
   try {
     await browser.storage.local.set({ pagespec_locale: lang });
   } catch (err) {
