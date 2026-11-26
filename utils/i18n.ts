@@ -76,9 +76,9 @@ export const messages = {
     scoreUnit: 'pts',
 
     // PRD Panel
-    smartPrdTitle: 'Smart PRD Local Extractor',
+    smartPrdTitle: 'Smart PRD & Prototype Extractor',
     smartPrdDesc: (root = 'specs') =>
-      `Preserves current session authentication. Automatically pierces nested menu iframes, targets the core body frame, downloads high-res prototypes concurrently, and saves cleanly to ${root}/prd/.`,
+      `Preserves current session authentication across docs & prototype tools (Tencent Docs, Feishu, Confluence, Axure Cloud, Pixso, Modao). Pierces nested iframes, downloads high-res prototypes, and saves cleanly to ${root}/prd/.`,
     parseEngine: 'Parsing Engine',
     engineAuto: 'Auto Detect (Recommended)',
     engineTencent: 'Tencent Docs AST (Smart Document)',
@@ -108,7 +108,7 @@ export const messages = {
     // Design Panel
     designTitle: 'UI Design & Artboard Extractor',
     designDesc: (root = 'specs') =>
-      `Detects artboards on Lanhu, MasterGo, Modao, or web design galleries. Strips thumbnail CDN resize params to recover original HD images and saves cleanly to ${root}/design/.`,
+      `Detects artboards across online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso) and web galleries. Recovers full-resolution originals & tokens into ${root}/design/.`,
     rescanArtboards: 'Rescan Artboards',
     scanningArtboards: 'Scanning artboards on current page...',
     searchArtboardsPlaceholder: 'Search artboards by name...',
@@ -301,9 +301,9 @@ export const messages = {
     scoreUnit: '分',
 
     // PRD Panel
-    smartPrdTitle: '智能 PRD 本地化提取',
+    smartPrdTitle: '智能 PRD 与原型本地化提取',
     smartPrdDesc: (root = 'specs') =>
-      `保留当前登录态，自动穿透嵌套菜单 iframe 并抓取高清原型图，自动保存至项目的 ${root}/prd/ 目录并就近内聚图片资源。`,
+      `保留当前登录态，自动穿透文档与原型工具（腾讯文档、企微、飞书、语雀、Confluence、Axure Cloud、Pixso、墨刀）的嵌套 iframe 并抓取原型图，保存至项目的 ${root}/prd/ 目录。`,
     parseEngine: '解析引擎',
     engineAuto: '自动识别 (推荐)',
     engineTencent: '腾讯文档 AST (智能文档)',
@@ -331,9 +331,9 @@ export const messages = {
       `@${relPath} 请根据该需求规格文档与同级 ./assets/${title}/ 下的原型图实现功能`,
 
     // Design Panel
-    designTitle: '蓝湖 / 在线设计稿高保真提取',
+    designTitle: '在线设计稿高保真提取',
     designDesc: (root = 'specs') =>
-      `自动嗅探蓝湖、MasterGo、墨刀等页面的高清画板原图与标注色值，一键自动保存至项目的 ${root}/design/ 目录。`,
+      `自动嗅探 Figma、Zeplin、Sketch、蓝湖、Mockplus、MasterGo、Pixso 等在线设计平台的高清画板原图与标注色值，一键保存至项目的 ${root}/design/ 目录。`,
     rescanArtboards: '重新扫描画板',
     scanningArtboards: '正在扫描当前页面设计画板...',
     searchArtboardsPlaceholder: '按画板名称搜索过滤...',

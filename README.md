@@ -17,7 +17,7 @@
 
 ---
 
-**PageSpec** is a developer-centric browser extension engineered to penetrate complex, nested, or cross-origin iframe requirement pages (Tencent Docs, WeChat SmartPages, Axure, Lanhu, MasterGo, Feishu/Lark, Yuque, Confluence, Swagger/OpenAPI, etc.).
+**PageSpec** is a developer-centric browser extension engineered to extract structured context from authenticated web PRDs & prototypes (Tencent Docs, WeChat SmartPages, Feishu/Lark, Yuque, Confluence, Notion, Axure Cloud, Pixso, Modao), online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso), and Swagger/OpenAPI docs—**zero backend, zero API tokens**.
 
 Simply bind your local project root folder once—PageSpec extracts authenticated web content into structured **Markdown** bundles and co-located high-resolution assets directly inside **`specs/{prd,design,api,qa}`** (auto-created with anti-nesting protection, customizable per-project root naming such as `docs/specs`, and automatic conflict detection)—**100% locally and offline**, empowering Agentic Coding in **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
 
@@ -25,14 +25,14 @@ Simply bind your local project root folder once—PageSpec extracts authenticate
 
 ## ✨ Key Features
 
-### 1. 🛡️ Nested / Cross-Origin iframe Penetration & Targeted Extraction
-- **Deep Frame Penetration**: Penetrates all sub-frames via Chrome MV3 `all_frames: true` to bypass cross-origin isolation.
+### 1. 🛡️ Multi-Platform PRD & Prototype Penetration (Docs + Interactive Prototypes)
+- **Deep Frame Penetration**: Penetrates all sub-frames via Chrome MV3 `all_frames: true` to bypass cross-origin isolation across Tencent Docs, WeChat SmartPages, Feishu/Lark, Yuque, Confluence, Notion, Axure Cloud, Pixso, and Modao.
 - **Content Density Scoring**: Automatically differentiates navigation/sidebar menus from the core specification body, filtering out menu clutter and anchor density.
 - **Session-Authenticated Prototype Assets**: Runs directly within the authenticated session context, preserving login cookies to download high-res images, recordings, and Canvas elements concurrently, rewriting them to co-located relative paths (`./assets/<spec>/prototype-001.png`).
 - **Tencent Docs AST & SmartPage Engine**: Direct AST and block normalization for Tencent Docs and WeChat SmartPages, preserving headings, blockquotes, lists, and tables without layout destruction.
 
-### 2. 🎨 UI Design & Artboard Extractor (Lanhu / MasterGo / Modao / Web)
-- **Original HD Image Recovery**: Automatically detects design artboards across Lanhu (`lanhuapp.com`), MasterGo, Modao, and web galleries, stripping CDN/OSS thumbnail resize parameters (`x-oss-process`, `imageMogr2`, etc.) to download full-resolution originals with automatic fallback.
+### 2. 🎨 Multi-Platform UI Design & Artboard Extractor (Figma / Zeplin / Sketch / MasterGo / Lanhu / Mockplus / Pixso)
+- **Zero-Token HD & Asset Capture**: Detects design artboards across mainstream online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso) and web galleries inside your authenticated session—stripping CDN/OSS thumbnail resize parameters (`x-oss-process`, `imageMogr2`, etc.) to recover full-resolution originals with automatic fallback.
 - **Selective Artboard Picker**: Search and check only the artboards needed for your current feature task, capturing visible design annotations and color tokens into `specs/design/<title>.md` + `./assets/<title>/design-xxx.<ext>`.
 
 ### 3. ⚡ Categorized `specs/` Sync, Incremental Diff & Section Trimming
@@ -57,7 +57,7 @@ Simply bind your local project root folder once—PageSpec extracts authenticate
 ## 💡 AI Agent Coding Workflow
 
 ```text
-[ Browser PRD / Lanhu Design / Swagger Page ]
+[ Browser PRD / Prototype / Design Board / Swagger Page ]
                      │
               ( Click PageSpec )
                      ▼
