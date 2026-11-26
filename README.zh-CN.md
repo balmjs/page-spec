@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>高效前端需求、设计稿与接口规范提取浏览器插件 (Chrome MV3 & Firefox MV2/MV3)</b><br />
-  <sub><a href="README.md">English</a> | 简体中文</sub>
+  <sub><a href="README.md">English</a> | 简体中文 · <a href="https://spec.balmjs.com">官方网站</a> · <a href="https://spec.balmjs.com/privacy">隐私政策</a></sub>
 </p>
 
 <p align="center">

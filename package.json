@@ -4,6 +4,11 @@
   "description": "Cross-browser extension to extract authenticated web PRDs, UI designs & API specs into clean specs/{prd,design,api} local project folders.",
   "private": true,
   "license": "MIT",
+  "homepage": "https://spec.balmjs.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/balmjs/page-spec.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "wxt",

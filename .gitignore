@@ -18,5 +18,6 @@ dist
 !.vscode/extensions.json
 .idea
 
-# Internal docs
+# Internal docs & workspace guardrails
 docs
+AGENTS.md

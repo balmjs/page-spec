@@ -67,5 +67,5 @@ If PageSpec's data practices change in a future release, we will update this Pri
 
 For privacy inquiries, data questions, or support:
 
-- **Email:** `support@balmjs.com` *(TODO: replace with your monitored public contact email before Chrome Web Store submission)*
+- **Official Privacy Policy URL:** [https://spec.balmjs.com/privacy](https://spec.balmjs.com/privacy)
 - **GitHub Issues:** [https://github.com/balmjs/page-spec/issues](https://github.com/balmjs/page-spec/issues)

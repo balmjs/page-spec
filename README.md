@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>High-efficiency web PRD, UI design & API specification extractor browser extension (Chrome MV3 & Firefox MV2/MV3)</b><br />
-  <sub>English | <a href="README.zh-CN.md">简体中文</a></sub>
+  <sub>English | <a href="README.zh-CN.md">简体中文</a> · <a href="https://spec.balmjs.com">Official Portal</a> · <a href="https://spec.balmjs.com/privacy">Privacy Policy</a></sub>
 </p>
 
 <p align="center">
