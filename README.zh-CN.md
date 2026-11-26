@@ -17,7 +17,7 @@
 
 ---
 
-**PageSpec** 是一款专为前端工程师与全栈开发者打造的零后端、零 Token 浏览器规范提取插件，一键穿透各类带登录态的需求文档与原型工具（腾讯文档、企业微信文档、飞书、语雀、Confluence、Notion、Axure Cloud、Pixso、墨刀）、主流在线设计平台（Figma、蓝湖、MasterGo、Sketch、Zeplin、Mockplus、Pixso）与 Swagger/OpenAPI 接口页面。
+**PageSpec** 是一款专为前端工程师与全栈开发者打造的零后端、零 Token 浏览器规范提取插件，一键穿透各类带登录态的需求文档与原型工具（腾讯文档、企业微信文档、飞书、语雀、Confluence、Notion、Axure Cloud、Pixso、墨刀、Mockplus RP）、主流在线设计平台（Figma、蓝湖、MasterGo、Sketch、Zeplin、Mockplus、Pixso）与 Swagger/OpenAPI 接口页面。
 
 只需绑定一次本地项目根目录，插件即可在保留当前会话登录鉴权态的前提下，按类型自动归档至项目下的 **`specs/{prd,design,api,qa}`** 分层目录（默认自动创建 `specs/`，自带防套娃保护、支持按项目自定义根目录名或多级路径如 `docs/specs`，并自动探测同名目录冲突），就近内聚图片资源。**全程 100% 本地离线解析**，即刻赋能 **Cursor**、**Claude Code**、**Windsurf**、**Codex** 等 AI Coding Agent。
 
@@ -25,15 +25,15 @@
 
 ## ✨ 核心亮点
 
-### 1. 🛡️ 文档与原型 PRD 智能穿透提取
-- **多层 iframe 自动穿透**：通过 Chrome MV3 `all_frames: true` 深入所有子框架，打破腾讯文档、企微文档、飞书、语雀、Confluence、Notion、Axure Cloud、Pixso、墨刀等页面的跨域隔离限制。
-- **正文密度打分机制 (Content Density Scoring)**：智能区分左侧菜单/目录 iframe 与正文内容 iframe，自动锁定核心需求文档区，剔除侧栏、顶部杂音与高密度超链接菜单。
-- **带鉴权的原型图抓取**：在正文 frame 真实会话下运行，自动携带登录态 Cookie 并发下载图片与 Canvas，转换为同级相对路径引用（`./assets/<文档名>/prototype-001.png`）。
-- **腾讯文档 AST 与轻文档优化引擎**：针对腾讯文档与微信智能/轻文档提供专用 AST 解析与 DOM 规整处理器，完美保留各级标题、引用块（`>`）、列表嵌套缩进及表格布局。
+### 1. 🛡️ 文档与原型 PRD 智能穿透双轨提取
+- **多层 iframe 自动穿透**：通过 Chrome MV3 `all_frames: true` 深入所有子框架，打破腾讯文档、企微文档、飞书、语雀、Confluence、Notion、Axure Cloud (`*.axshare.com`)、Pixso、墨刀、Mockplus RP 等页面的跨域隔离限制。
+- **原型类 PRD 双轨合成引擎**：自动协同外壳与内层原型框架，将页面说明（Page Notes）、目录路径、控件交互标注（Widget Annotations）与纯净无工具栏的原型线框高清快照（`./assets/<文档名>/prototype-001.png`）双轨合成，让多模态 AI 既能看清完整线框图又能读懂交互规则。
+- **正文密度打分与鉴权资产抓取**：智能过滤侧栏菜单杂音，在真实登录会话下并发下载原型图与 Canvas/SVG 资源并转为同级相对路径引用。
+- **腾讯文档 AST 与轻文档优化引擎**：针对腾讯文档与微信智能/轻文档提供专用 AST 解析与 DOM 规整处理器，完美保留各级标题、引用块（`>`）、超链接内联样式、列表嵌套缩进及表格布局。
 
-### 2. 🎨 主流在线设计平台高保真提取（Figma / 蓝湖 / MasterGo / Sketch / Zeplin / Mockplus / Pixso）
-- **零 Token 无损原图还原**：复用当前登录会话，自动嗅探 Figma、Zeplin、Sketch、蓝湖、Mockplus、MasterGo、Pixso 及网页设计图集中的画板，智能剥离 OSS/COS 缩略图缩放参数（`x-oss-process`、`imageMogr2` 等）并发抓取高清设计原图（签名受限时自动回退原地址）。
-- **画板搜索按需勾选**：支持按画板名称搜索与勾选本次任务所需的设计图，同步抓取页面批注与色值 Token，自动落盘至 `specs/design/<文档名>.md` 与 `./assets/<文档名>/design-xxx.<ext>`。
+### 2. 🎨 主流在线设计平台、矢量 SVG 与 WebGL 画布高保真提取（Figma / 蓝湖 / MasterGo / Sketch / Zeplin / Mockplus / Pixso）
+- **零 Token 原图还原与安全 SVG 切图**：复用当前登录会话，自动嗅探 Figma、Zeplin、Sketch、蓝湖、Mockplus、MasterGo、Pixso 及网页设计图集中的画板与独立内联 `<svg>`（`>= 48×48`，自动剥离 `<script>` 与 `on*` 事件），剥离未签名 OSS/COS/Imgix 缩放参数并发抓取高清原图（签名受限时自动回退原地址）。
+- **WebGL 空白帧自动探测与视口高清裁切兜底**：针对 Figma / MasterGo / Pixso 等 WebGL 画布（`preserveDrawingBuffer: false`），自动抽样探测空白帧并无缝切换至无工具栏杂边的画布区域高清裁切兜底，同步提取检查器色值、字体 Token 与 CSS 批注落盘至 `specs/design/<文档名>.md`。
 
 ### 3. ⚡ 智能 `specs/` 分层直写、增量 Diff 与章节裁剪
 - **自动分层目录与防冲突自定义**：直接选中本地项目根目录（如 `my-app/`）即可，提取 PRD 自动保存至 `specs/prd/`、设计稿保存至 `specs/design/`、接口文档保存至 `specs/api/`。支持按项目自定义根目录名及多级相对路径（如 `docs/specs`、`page-specs`、`.specs`），若目标项目已有非 PageSpec 的同名 `specs/` 目录会自动提醒并提供一键避让。
@@ -117,6 +117,9 @@ pnpm dev
 
 # 启动 Firefox 调试
 pnpm dev:firefox
+
+# 类型检查与单元测试
+pnpm typecheck && pnpm test
 
 # 构建生产包
 pnpm build

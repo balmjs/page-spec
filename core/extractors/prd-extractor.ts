@@ -7,6 +7,7 @@ import {
 } from './smartpage-dom-preprocessor';
 import {
   sanitizeFilename,
+  cleanPlatformTitleSuffix,
   resolveImageSource,
   extractBackgroundImageUrl,
   isSignificantVisualElement,
@@ -31,6 +32,8 @@ export interface ExtractedAssetMeta {
 export interface PrdExtractionResult {
   title: string;
   sanitizedTitle: string;
+  platform?: string;
+  sourceType?: 'prd-doc' | 'prd-prototype';
   markdown: string;
   assets: BundleAsset[];
   assetMetadata: ExtractedAssetMeta[];
@@ -136,13 +139,20 @@ export function findDocumentContainer(doc: Document = document): Element | null 
 }
 
 import { isTencentDoc, extractTencentDocBundle } from './tencent-doc-extractor';
+import {
+  detectPrototypePrdPlatform,
+  extractPrototypePrdBundle,
+  type PrototypePlatform,
+} from './prototype-prd-extractor';
+
+export type PrdEngineMode = 'auto' | 'tencent' | 'prototype' | 'dom';
 
 /**
  * Extract authenticated PRD content, rewrite assets locally, and bundle into Markdown.
  */
 export async function extractPrdBundle(
   onProgress?: (current: number, total: number, message: string) => void,
-  engineMode: 'auto' | 'tencent' | 'dom' = 'auto'
+  engineMode: PrdEngineMode = 'auto'
 ): Promise<PrdExtractionResult> {
   // 0. Dedicated native extractor for Tencent Docs (doc.weixin.qq.com / docs.qq.com / page.weixin.qq.com)
   const shouldUseTencent =
@@ -150,7 +160,12 @@ export async function extractPrdBundle(
 
   if (shouldUseTencent) {
     try {
-      return await extractTencentDocBundle(onProgress);
+      const tencentRes = await extractTencentDocBundle(onProgress);
+      return {
+        ...tencentRes,
+        platform: tencentRes.platform || 'tencent-docs',
+        sourceType: 'prd-doc',
+      };
     } catch (err: any) {
       if (engineMode === 'tencent') {
         throw err;
@@ -159,7 +174,40 @@ export async function extractPrdBundle(
     }
   }
 
-  let rawTitle = document.title?.trim() || '';
+  // 0.5 Dedicated dual-track extractor for Prototype PRDs (Axure Cloud, axshare, Modao, Pixso, Mockplus RP)
+  let detectedProtoPlatform: PrototypePlatform | null = detectPrototypePrdPlatform();
+  if (!detectedProtoPlatform && engineMode === 'auto' && window !== window.top) {
+    // Check if the outer top frame is a recognized prototype shell hosting this iframe
+    try {
+      const shellRes: any = await browser.runtime.sendMessage({
+        type: 'COLLECT_PROTOTYPE_SHELL_CONTEXT',
+        frameUrl: window.location.href,
+      });
+      if (shellRes?.ok && shellRes.data?.platform) {
+        detectedProtoPlatform = shellRes.data.platform as PrototypePlatform;
+      }
+    } catch {
+      // ignore shell check error
+    }
+  }
+
+  const shouldUsePrototype =
+    engineMode === 'prototype' || (engineMode === 'auto' && Boolean(detectedProtoPlatform));
+
+  if (shouldUsePrototype) {
+    try {
+      return await extractPrototypePrdBundle(onProgress, {
+        forcedPlatform: detectedProtoPlatform || undefined,
+      });
+    } catch (err: any) {
+      if (engineMode === 'prototype') {
+        throw err;
+      }
+      console.warn('[PageSpec] 原型 PRD 双轨提取失败，降级为通用 DOM 提取:', err);
+    }
+  }
+
+  let rawTitle = cleanPlatformTitleSuffix(document.title?.trim() || '');
   if (!rawTitle || rawTitle === 'Untitled' || rawTitle === 'Page 1' || rawTitle === 'Axure RP Page') {
     // Check Axure global metadata
     try {
@@ -176,7 +224,7 @@ export async function extractPrdBundle(
       } else {
         try {
           if (window.top && window.top.document.title?.trim()) {
-            rawTitle = window.top.document.title.trim();
+            rawTitle = cleanPlatformTitleSuffix(window.top.document.title.trim());
           }
         } catch {
           // ignore cross-origin top access restriction
@@ -187,7 +235,6 @@ export async function extractPrdBundle(
   if (!rawTitle) {
     rawTitle = 'Requirement_Document';
   }
-  const cleanTitle = sanitizeFilename(rawTitle, 'PRD');
   const sourceUrl = window.location.href;
   const warnings: string[] = [];
 
@@ -208,6 +255,7 @@ export async function extractPrdBundle(
       rawTitle = candidateTitle;
     }
   }
+  const cleanTitle = sanitizeFilename(rawTitle, 'PRD');
 
   // 2. Mark live DOM with computed styles (bold, headings, video attachments, visual dimensions) before cloning
   const { cleanup, canvasMap } = markLiveDomForSmartpage(container);
@@ -464,6 +512,7 @@ export async function extractPrdBundle(
   return {
     title: rawTitle,
     sanitizedTitle: cleanTitle,
+    sourceType: 'prd-doc',
     markdown: fullMarkdown,
     assets,
     assetMetadata,

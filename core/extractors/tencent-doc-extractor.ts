@@ -364,6 +364,173 @@ function detectContextualList(
   return null;
 }
 
+export interface TencentCharFormat {
+  heading?: number;
+  bold?: boolean;
+  italic?: boolean;
+  strike?: boolean;
+  code?: boolean;
+  list?: ListFormatMeta;
+  blockquote?: boolean;
+}
+
+/**
+ * Apply inline charFormatMap styling (bold/italic/strike/code) to a plain text span.
+ */
+function formatStyledSpan(
+  span: string,
+  spanStartPos: number,
+  charFormatMap: Record<number, TencentCharFormat>
+): string {
+  if (!span) return '';
+  let result = '';
+  let buffer = '';
+  let currentFormat: TencentCharFormat | null = null;
+  let currentKey = '';
+
+  const flush = () => {
+    if (!buffer) return;
+    let seg = buffer;
+    if (currentFormat?.code) seg = `\`${seg.replace(/`/g, '\\`')}\``;
+    if (currentFormat?.bold) seg = `**${seg}**`;
+    if (currentFormat?.italic) seg = `*${seg}*`;
+    if (currentFormat?.strike) seg = `~~${seg}~~`;
+    result += seg;
+    buffer = '';
+  };
+
+  for (let i = 0; i < span.length; i++) {
+    const ch = span[i]!;
+    const fmt = charFormatMap[spanStartPos + i] || {};
+    const formatKey = `${fmt.bold ? 1 : 0}${fmt.italic ? 1 : 0}${fmt.strike ? 1 : 0}${fmt.code ? 1 : 0}`;
+    if (formatKey !== currentKey) {
+      flush();
+      currentFormat = fmt;
+      currentKey = formatKey;
+    }
+    buffer += ch;
+  }
+  flush();
+  return result;
+}
+
+/**
+ * Clean non-OpenXML-field fallback links, mentions, and template button markup.
+ */
+export function processTencentLinks(text: string): string {
+  // 1. Process Word/Tencent OpenXML field codes if still present: \x13HYPERLINK ... \x14display\x15
+  let result = text.replace(
+    /(?:\x13)?(HYPERLINK|MENTION\w*)\s+(\S+)[^\x14\x15]*\x14([^\x15]*)\x15/g,
+    (_match, kind, url, display) => {
+      let cleanUrl = String(url).trim();
+      const cleanText = String(display).trim() || cleanUrl;
+      if (
+        String(kind).startsWith('MENTION') ||
+        cleanUrl.startsWith('https://@') ||
+        cleanUrl.startsWith('@') ||
+        cleanUrl.includes('MENTION')
+      ) {
+        return cleanText;
+      }
+      try {
+        cleanUrl = decodeURIComponent(cleanUrl);
+      } catch {
+        // ignore
+      }
+      return `[${cleanText}](${cleanUrl})`;
+    }
+  );
+
+  // 2. Fallback for raw HYPERLINK tokens without field control chars
+  result = result.replace(
+    /HYPERLINK\s+(\S+)\s+(?:normalLink|docLink|text|addonHina)?(?:\s+\\td\w+\s+[^\s\n\r]+)*\s*(?:\\td[a-z]+\s+)?([^\s\n\r\[]+)?/g,
+    (_match, url, display) => {
+      let linkUrl = url;
+      try {
+        linkUrl = decodeURIComponent(linkUrl);
+      } catch {
+        // ignore
+      }
+      const displayText = display && display !== 'normalLink' ? display : linkUrl;
+      return `[${displayText}](${linkUrl})`;
+    }
+  );
+
+  // 3. Clean WeChat Work mentions
+  result = result.replace(/MENTION_WXWORK\s+[^\n\r]*?(@\S+)/g, '$1');
+
+  // 4. Clean stray control characters and \td tokens
+  result = result.replace(/[\x13\x14\x15]/g, '').replace(/\\td\w+\s+[^\s\n\r]+/g, '');
+
+  // 5. Bare URLs (not already markdown links)
+  if (!result.includes('](')) {
+    result = result.replace(/(https?:\/\/[^\s\)\],]+)/g, '[$1]($1)');
+  }
+
+  // 6. Clean WeChat Work Cold Start / template button markup
+  result = result.replace(/WxWORK_COLD_START_BUTTON\s*\{[^}]*\}\s*(\S+)?/g, (_match, label) => {
+    return label ? `\`[${label}]\`` : '';
+  });
+
+  return result;
+}
+
+/**
+ * Render an inline Tencent Docs line while preserving charFormatMap styles
+ * both outside and inside OpenXML HYPERLINK / MENTION field display spans.
+ */
+export function renderTencentInlineLine(
+  text: string,
+  lineStartPos: number,
+  charFormatMap: Record<number, TencentCharFormat>
+): string {
+  if (!text) return '';
+
+  const fieldRegex = /(?:\x13)?(HYPERLINK|MENTION\w*)\s+(\S+)[^\x14\x15]*\x14([^\x15]*)\x15/g;
+  let out = '';
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = fieldRegex.exec(text)) !== null) {
+    if (m.index > lastIndex) {
+      out += formatStyledSpan(text.slice(lastIndex, m.index), lineStartPos + lastIndex, charFormatMap);
+    }
+
+    const kind = m[1] || '';
+    let cleanUrl = (m[2] || '').trim();
+    const rawDisplay = m[3] || '';
+    const sepIdx = m[0].indexOf('\x14');
+    const displayStart = sepIdx >= 0 ? m.index + sepIdx + 1 : m.index;
+    const styledDisplay = formatStyledSpan(rawDisplay, lineStartPos + displayStart, charFormatMap).trim();
+
+    if (
+      kind.startsWith('MENTION') ||
+      cleanUrl.startsWith('https://@') ||
+      cleanUrl.startsWith('@') ||
+      cleanUrl.includes('MENTION')
+    ) {
+      out += styledDisplay || cleanUrl;
+    } else {
+      try {
+        cleanUrl = decodeURIComponent(cleanUrl);
+      } catch {
+        // ignore
+      }
+      out += `[${styledDisplay || cleanUrl}](${cleanUrl})`;
+    }
+
+    lastIndex = fieldRegex.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    out += formatStyledSpan(text.slice(lastIndex), lineStartPos + lastIndex, charFormatMap);
+  }
+
+  // Run fallback link/mention cleanup BEFORE stripping remaining non-printable control chars
+  const processed = processTencentLinks(out);
+  return processed.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+}
+
 /**
  * Extract authenticated Tencent Docs (doc.weixin.qq.com / docs.qq.com) directly
  * via its internal opendoc API and mutations AST into standard Markdown & local assets.
@@ -713,98 +880,8 @@ export async function extractTencentDocBundle(
     markdownParts.push(t);
   }
 
-  function processLinks(text: string): string {
-    // 1. Process Word/Tencent OpenXML field codes: \x13HYPERLINK ... \x14display\x15 or \x13MENTION ... \x14display\x15
-    let result = text.replace(
-      /(?:\x13)?(?:HYPERLINK|MENTION\w*)\s+(\S+)[^\x14\x15]*\x14([^\x15]*)\x15/g,
-      (_match, url, display) => {
-        let cleanUrl = url.trim();
-        let cleanText = display.trim() || cleanUrl;
-        if (cleanUrl.startsWith('https://@') || cleanUrl.startsWith('@') || cleanUrl.includes('MENTION')) {
-          return cleanText;
-        }
-        try {
-          cleanUrl = decodeURIComponent(cleanUrl);
-        } catch {
-          // ignore
-        }
-        return `[${cleanText}](${cleanUrl})`;
-      }
-    );
-
-    // 2. Fallback for raw HYPERLINK tokens without field control chars
-    result = result.replace(
-      /HYPERLINK\s+(\S+)\s+(?:normalLink|docLink|text|addonHina)?(?:\s+\\td\w+\s+[^\s\n\r]+)*\s*(?:\\td[a-z]+\s+)?([^\s\n\r\[]+)?/g,
-      (_match, url, display) => {
-        let linkUrl = url;
-        try {
-          linkUrl = decodeURIComponent(linkUrl);
-        } catch {
-          // ignore
-        }
-        const displayText = display && display !== 'normalLink' ? display : linkUrl;
-        return `[${displayText}](${linkUrl})`;
-      }
-    );
-
-    // 3. Clean WeChat Work mentions
-    result = result.replace(/MENTION_WXWORK\s+[^\n\r]*?(@\S+)/g, '$1');
-
-    // 4. Clean stray control characters and \td tokens
-    result = result.replace(/[\x13\x14\x15]/g, '').replace(/\\td\w+\s+[^\s\n\r]+/g, '');
-
-    // 5. Bare URLs (not already markdown links)
-    if (!result.includes('](')) {
-      result = result.replace(/(https?:\/\/[^\s\)\],]+)/g, '[$1]($1)');
-    }
-
-    // 6. Clean WeChat Work Cold Start / template button markup (e.g. WxWORK_COLD_START_BUTTON {...}使用)
-    result = result.replace(/WxWORK_COLD_START_BUTTON\s*\{[^}]*\}\s*(\S+)?/g, (_match, label) => {
-      return label ? `\`[${label}]\`` : '';
-    });
-
-    return result;
-  }
-
   function renderInlineLine(text: string, lineStartPos: number): string {
-    if (!text) return '';
-
-    let result = '';
-    let buffer = '';
-    let currentFormat: any = null;
-    let currentKey = '';
-
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i]!;
-      const fmt = charFormatMap[lineStartPos + i] || {};
-      const formatKey = `${fmt.bold ? 1 : 0}${fmt.italic ? 1 : 0}${fmt.strike ? 1 : 0}${fmt.code ? 1 : 0}`;
-      if (formatKey !== currentKey) {
-        if (buffer) {
-          let seg = buffer;
-          if (currentFormat?.code) seg = `\`${seg.replace(/`/g, '\\`')}\``;
-          if (currentFormat?.bold) seg = `**${seg}**`;
-          if (currentFormat?.italic) seg = `*${seg}*`;
-          if (currentFormat?.strike) seg = `~~${seg}~~`;
-          result += seg;
-        }
-        buffer = '';
-        currentFormat = fmt;
-        currentKey = formatKey;
-      }
-      buffer += ch;
-    }
-
-    if (buffer) {
-      let seg = buffer;
-      if (currentFormat?.code) seg = `\`${seg.replace(/`/g, '\\`')}\``;
-      if (currentFormat?.bold) seg = `**${seg}**`;
-      if (currentFormat?.italic) seg = `*${seg}*`;
-      if (currentFormat?.strike) seg = `~~${seg}~~`;
-      result += seg;
-    }
-
-    result = result.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
-    return processLinks(result);
+    return renderTencentInlineLine(text, lineStartPos, charFormatMap);
   }
 
   // Flush table to valid GFM Markdown

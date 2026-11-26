@@ -84,7 +84,7 @@ const props = defineProps<{
 }>();
 
 type ActiveTab = 'prd' | 'design' | 'api' | 'qa' | 'dir';
-export type EngineMode = 'auto' | 'tencent' | 'dom';
+export type EngineMode = 'auto' | 'tencent' | 'prototype' | 'dom';
 
 const ACTIVE_TAB_STORAGE_KEY = 'pagespec_active_tab';
 const VALID_TABS: ReadonlySet<ActiveTab> = new Set(['prd', 'design', 'api', 'qa', 'dir']);
@@ -228,6 +228,7 @@ const isScanningArtboards = ref(false);
 const designPlatform = ref<DesignPlatform>('generic-design');
 const designArtboards = ref<DesignArtboardSummary[]>([]);
 const selectedArtboardIds = ref<string[]>([]);
+const designVectorCount = ref(0);
 const designColorTokens = ref<string[]>([]);
 const designAnnotationsCount = ref(0);
 
@@ -240,6 +241,8 @@ const selectedEndpointKeys = ref<string[]>([]);
 const lastPrdResult = ref<{
   title: string;
   sanitizedTitle: string;
+  platform?: string;
+  sourceType?: 'prd-doc' | 'prd-prototype';
   rawMarkdown: string;
   markdown: string;
   assets: SerializableAsset[];
@@ -260,11 +263,13 @@ const lastDesignResult = ref<{
   title: string;
   sanitizedTitle: string;
   platform: DesignPlatform;
+  sourceType?: 'design-spec';
   rawMarkdown: string;
   markdown: string;
   assets: SerializableAsset[];
   totalAssets: number;
   artboardsCount: number;
+  vectorCount?: number;
   warnings: string[];
   markdownPreview: string;
   savedToDirectory?: boolean;
@@ -347,6 +352,8 @@ const prdManifest = computed(() => {
     title: lastPrdResult.value.title,
     sanitizedTitle: lastPrdResult.value.sanitizedTitle,
     sourceUrl: pageUrl.value,
+    sourceType: lastPrdResult.value.sourceType || 'prd-doc',
+    platform: lastPrdResult.value.platform,
     markdownFile: `${lastPrdResult.value.sanitizedTitle}.md`,
     diffFile: lastPrdResult.value.diffFilename,
     assetsCount: lastPrdResult.value.totalAssets,
@@ -360,10 +367,13 @@ const designManifest = computed(() => {
     title: lastDesignResult.value.title,
     sanitizedTitle: lastDesignResult.value.sanitizedTitle,
     sourceUrl: pageUrl.value,
+    designUrl: pageUrl.value,
+    sourceType: 'design-spec',
     markdownFile: `${lastDesignResult.value.sanitizedTitle}.md`,
     diffFile: lastDesignResult.value.diffFilename,
     assetsCount: lastDesignResult.value.totalAssets,
     artboardsCount: lastDesignResult.value.artboardsCount,
+    vectorCount: lastDesignResult.value.vectorCount,
     platform: lastDesignResult.value.platform,
   });
 });
@@ -375,6 +385,7 @@ const apiManifest = computed(() => {
     title: lastApiResult.value.title,
     sanitizedTitle: lastApiResult.value.sanitizedTitle,
     sourceUrl: pageUrl.value,
+    sourceType: 'api-spec',
     markdownFile: `${lastApiResult.value.sanitizedTitle}.md`,
     diffFile: lastApiResult.value.diffFilename,
     assetsCount: 0,
@@ -424,6 +435,7 @@ async function armQaDiagnosticsOnTab(explicitTabId?: number) {
 }
 
 async function refreshActiveTabContext() {
+  extractionError.value = '';
   let activeTabId: number | undefined;
   try {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
@@ -724,15 +736,18 @@ async function scanDesignArtboards(explicitTabId?: number) {
       designPlatform.value = res.data.platform;
       designArtboards.value = res.data.artboards || [];
       selectedArtboardIds.value = designArtboards.value.map((a) => a.id);
+      designVectorCount.value = res.data.vectorCount ?? 0;
       designColorTokens.value = res.data.colorTokens || [];
       designAnnotationsCount.value = (res.data.pageAnnotations || []).length;
     } else {
       designArtboards.value = [];
       selectedArtboardIds.value = [];
+      designVectorCount.value = 0;
     }
   } catch {
     designArtboards.value = [];
     selectedArtboardIds.value = [];
+    designVectorCount.value = 0;
   } finally {
     isScanningArtboards.value = false;
   }
@@ -1038,6 +1053,8 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
         title: rawRes.title,
         sanitizedTitle: rawRes.sanitizedTitle,
         sourceUrl: pageUrl.value,
+        sourceType: rawRes.sourceType || 'prd-doc',
+        platform: rawRes.platform,
         markdownFile: `${rawRes.sanitizedTitle}.md`,
         diffFile: diffFilename,
         assetsCount: rawRes.totalAssets ?? (rawRes.assets ? rawRes.assets.length : 0),
@@ -1051,7 +1068,11 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
         taskId: syncTargetTaskId.value,
       });
       if (pushRes.ok) {
-        specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
+        const staleNote =
+          pushRes.staleTestCount && pushRes.staleTestCount > 0
+            ? ` (${t('staleTestsMarked')(pushRes.staleTestCount)})`
+            : '';
+        specLoopSyncNotice = `${t('pushSpecLoopSuccess')(pushRes.taskId)}${staleNote}`;
         refreshSpecLoopWorkspaceData();
       } else {
         extractionError.value = t('errSpecLoopPartialSync')(pushRes.error || '');
@@ -1061,6 +1082,8 @@ async function handleExtractPrd(mode: 'directory' | 'zip') {
     lastPrdResult.value = {
       title: rawRes.title,
       sanitizedTitle: rawRes.sanitizedTitle,
+      platform: rawRes.platform,
+      sourceType: rawRes.sourceType || 'prd-doc',
       rawMarkdown: rawRes.rawMarkdown || rawRes.markdown,
       markdown: rawRes.markdown,
       assets: rawRes.assets || [],
@@ -1159,10 +1182,13 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
         title: res.title,
         sanitizedTitle: res.sanitizedTitle,
         sourceUrl: pageUrl.value,
+        designUrl: pageUrl.value,
+        sourceType: 'design-spec',
         markdownFile: `${res.sanitizedTitle}.md`,
         diffFile: diffFilename,
         assetsCount: res.totalAssets ?? 0,
         artboardsCount: res.artboardsCount ?? 0,
+        vectorCount: res.vectorCount ?? 0,
         platform: res.platform,
       });
       const pushRes = await pushSpecBundleToSpecLoop({
@@ -1175,7 +1201,11 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
         sectionAnchor: syncDesignSectionAnchor.value || undefined,
       });
       if (pushRes.ok) {
-        specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
+        const staleNote =
+          pushRes.staleTestCount && pushRes.staleTestCount > 0
+            ? ` (${t('staleTestsMarked')(pushRes.staleTestCount)})`
+            : '';
+        specLoopSyncNotice = `${t('pushSpecLoopSuccess')(pushRes.taskId)}${staleNote}`;
         refreshSpecLoopWorkspaceData();
       } else {
         extractionError.value = t('errSpecLoopPartialSync')(pushRes.error || '');
@@ -1186,11 +1216,13 @@ async function handleExtractDesign(mode: 'directory' | 'zip') {
       title: res.title,
       sanitizedTitle: res.sanitizedTitle,
       platform: res.platform,
+      sourceType: 'design-spec',
       rawMarkdown: res.markdown,
       markdown: res.markdown,
       assets: res.assets || [],
       totalAssets: res.totalAssets ?? 0,
       artboardsCount: res.artboardsCount ?? 0,
+      vectorCount: res.vectorCount ?? 0,
       warnings: res.warnings || [],
       markdownPreview: res.markdownPreview || res.markdown.slice(0, 3000),
       savedToDirectory: mode === 'directory' && Boolean(targetDir),
@@ -1302,7 +1334,11 @@ async function handleExtractApi(mode: 'directory' | 'download') {
         taskId: syncTargetTaskId.value,
       });
       if (pushRes.ok) {
-        specLoopSyncNotice = t('pushSpecLoopSuccess')(pushRes.taskId);
+        const staleNote =
+          pushRes.staleTestCount && pushRes.staleTestCount > 0
+            ? ` (${t('staleTestsMarked')(pushRes.staleTestCount)})`
+            : '';
+        specLoopSyncNotice = `${t('pushSpecLoopSuccess')(pushRes.taskId)}${staleNote}`;
         refreshSpecLoopWorkspaceData();
       } else {
         extractionError.value = t('errSpecLoopPartialSync')(pushRes.error || '');
@@ -1531,10 +1567,11 @@ function openSidePanel() {
             </span>
             <select
               v-model="engineMode"
-              class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded px-2 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+              class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded px-2 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer max-w-[200px]"
             >
               <option value="auto">{{ t('engineAuto') }}</option>
               <option value="tencent">{{ t('engineTencent') }}</option>
+              <option value="prototype">{{ t('enginePrototype') }}</option>
               <option value="dom">{{ t('engineDom') }}</option>
             </select>
           </div>
@@ -1711,6 +1748,7 @@ function openSidePanel() {
           v-model="selectedArtboardIds"
           :artboards="designArtboards"
           :platform="designPlatform"
+          :vector-count="designVectorCount"
           :color-tokens="designColorTokens"
           :annotations-count="designAnnotationsCount"
           :loading="isScanningArtboards"

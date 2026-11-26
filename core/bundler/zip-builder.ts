@@ -20,12 +20,15 @@ export interface SpecBundleManifest {
   title: string;
   sanitizedTitle: string;
   sourceUrl: string;
+  designUrl?: string;
+  sourceType?: 'prd-doc' | 'prd-prototype' | 'design-spec' | 'api-spec';
   extractedAt: string;
   markdownFile: string;
   diffFile?: string;
   assetsCount: number;
   endpointsCount?: number;
   artboardsCount?: number;
+  vectorCount?: number;
   platform?: string;
 }
 

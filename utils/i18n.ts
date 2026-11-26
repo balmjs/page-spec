@@ -78,10 +78,11 @@ export const messages = {
     // PRD Panel
     smartPrdTitle: 'Smart PRD & Prototype Extractor',
     smartPrdDesc: (root = 'specs') =>
-      `Preserves current session authentication across docs & prototype tools (Tencent Docs, Feishu, Confluence, Axure Cloud, Pixso, Modao). Pierces nested iframes, downloads high-res prototypes, and saves cleanly to ${root}/prd/.`,
+      `Preserves current session authentication across docs & prototype tools (Tencent Docs, Feishu, Confluence, Axure Cloud, Pixso, Modao, Mockplus RP). Pierces nested iframes, captures prototype snapshots & notes, and saves cleanly to ${root}/prd/.`,
     parseEngine: 'Parsing Engine',
     engineAuto: 'Auto Detect (Recommended)',
     engineTencent: 'Tencent Docs AST (Smart Document)',
+    enginePrototype: 'Prototype Dual-Track (Axure / Modao / Pixso / Mockplus)',
     engineDom: 'Standard Web DOM',
     autoTrimNoiseLabel: 'Auto-skip noisy sections (Revision History / Changelog)',
     autoTrimmedNotice: (names: string) => `Auto-skipped noisy sections: ${names}`,
@@ -108,12 +109,14 @@ export const messages = {
     // Design Panel
     designTitle: 'UI Design & Artboard Extractor',
     designDesc: (root = 'specs') =>
-      `Detects artboards across online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso) and web galleries. Recovers full-resolution originals & tokens into ${root}/design/.`,
+      `Detects artboards, inline SVGs & WebGL canvases across Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, and Pixso. Recovers full-resolution originals, vectors & tokens into ${root}/design/.`,
     rescanArtboards: 'Rescan Artboards',
     scanningArtboards: 'Scanning artboards on current page...',
     searchArtboardsPlaceholder: 'Search artboards by name...',
     artboardsSelectedCount: (sel: number, total: number) => `Selected ${sel} / ${total} artboards`,
     noArtboardsFound: 'No artboards or large design images detected in this frame. Try switching frame or scrolling to load thumbnails.',
+    detectedPlatformShort: 'Platform:',
+    detectedVectors: 'SVG Vectors:',
     detectedTokens: 'Color Tokens:',
     detectedAnnotations: 'Annotations:',
     btnWriteDesignDir: (name?: string) => (name ? `Save Design to Project (${name})` : 'Save Design to Local Project'),
@@ -303,10 +306,11 @@ export const messages = {
     // PRD Panel
     smartPrdTitle: '智能 PRD 与原型本地化提取',
     smartPrdDesc: (root = 'specs') =>
-      `保留当前登录态，自动穿透文档与原型工具（腾讯文档、企微、飞书、语雀、Confluence、Axure Cloud、Pixso、墨刀）的嵌套 iframe 并抓取原型图，保存至项目的 ${root}/prd/ 目录。`,
+      `保留当前登录态，自动穿透文档与原型工具（腾讯文档、企微、飞书、语雀、Confluence、Axure Cloud、Pixso、墨刀、Mockplus RP），同步采集交互批注与原型快照，保存至项目的 ${root}/prd/ 目录。`,
     parseEngine: '解析引擎',
     engineAuto: '自动识别 (推荐)',
     engineTencent: '腾讯文档 AST (智能文档)',
+    enginePrototype: '原型 PRD 双轨 (Axure / 墨刀 / Pixso / Mockplus)',
     engineDom: '通用网页 DOM',
     autoTrimNoiseLabel: '自动跳过常见噪音章节（如修订历史 / 变更记录）',
     autoTrimmedNotice: (names: string) => `已自动过滤噪音章节: ${names}`,
@@ -333,12 +337,14 @@ export const messages = {
     // Design Panel
     designTitle: '在线设计稿高保真提取',
     designDesc: (root = 'specs') =>
-      `自动嗅探 Figma、Zeplin、Sketch、蓝湖、Mockplus、MasterGo、Pixso 等在线设计平台的高清画板原图与标注色值，一键保存至项目的 ${root}/design/ 目录。`,
+      `自动嗅探 Figma、Zeplin、Sketch、蓝湖、Mockplus、MasterGo、Pixso 的高清画板、矢量 SVG 与 WebGL 画布，同步提取标注与色值至 ${root}/design/ 目录。`,
     rescanArtboards: '重新扫描画板',
     scanningArtboards: '正在扫描当前页面设计画板...',
     searchArtboardsPlaceholder: '按画板名称搜索过滤...',
     artboardsSelectedCount: (sel: number, total: number) => `已勾选 ${sel} / ${total} 张画板`,
     noArtboardsFound: '当前框架未检测到设计画板或大图（可尝试切换 Frame 或滚动页面加载缩略图后点击重新扫描）。',
+    detectedPlatformShort: '平台:',
+    detectedVectors: '矢量 SVG:',
     detectedTokens: '捕获色值:',
     detectedAnnotations: '页面标注:',
     btnWriteDesignDir: (name?: string) => (name ? `一键保存设计稿至项目 (${name})` : '一键保存设计稿至本地项目'),

@@ -8,10 +8,30 @@ const props = defineProps<{
   artboards: DesignArtboardSummary[];
   modelValue: string[];
   platform?: DesignPlatform;
+  vectorCount?: number;
   colorTokens?: string[];
   annotationsCount?: number;
   loading?: boolean;
 }>();
+
+const PLATFORM_DISPLAY_NAMES: Record<DesignPlatform, string> = {
+  figma: 'Figma',
+  zeplin: 'Zeplin',
+  sketch: 'Sketch',
+  lanhu: 'Lanhu',
+  mockplus: 'Mockplus',
+  mastergo: 'MasterGo',
+  pixso: 'Pixso',
+  modao: 'Modao',
+  axure: 'Axure',
+  'generic-design': 'Web',
+};
+
+const platformLabel = computed(() =>
+  props.platform && props.platform !== 'generic-design'
+    ? PLATFORM_DISPLAY_NAMES[props.platform] || props.platform
+    : ''
+);
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string[]): void;
@@ -76,11 +96,23 @@ function clearFiltered() {
       </button>
     </div>
 
-    <!-- Platform / Color Tokens / Annotations metadata badges -->
+    <!-- Platform / Vectors / Color Tokens / Annotations metadata badges -->
     <div
-      v-if="(colorTokens && colorTokens.length > 0) || (annotationsCount && annotationsCount > 0)"
+      v-if="platformLabel || (vectorCount && vectorCount > 0) || (colorTokens && colorTokens.length > 0) || (annotationsCount && annotationsCount > 0)"
       class="flex flex-wrap items-center gap-1.5 text-[10px]"
     >
+      <span
+        v-if="platformLabel"
+        class="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-semibold"
+      >
+        {{ t('detectedPlatformShort') }} {{ platformLabel }}
+      </span>
+      <span
+        v-if="vectorCount && vectorCount > 0"
+        class="px-1.5 py-0.5 rounded bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300"
+      >
+        {{ t('detectedVectors') }} {{ vectorCount }}
+      </span>
       <span
         v-if="colorTokens && colorTokens.length > 0"
         class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"

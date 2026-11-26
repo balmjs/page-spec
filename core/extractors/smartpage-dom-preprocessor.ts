@@ -77,7 +77,7 @@ export function markLiveDomForSmartpage(container: Element): LiveDomCaptureResul
         continue;
       }
 
-      if (el.tagName === 'SVG' && !el.parentElement?.closest('svg')) {
+      if (el.tagName.toLowerCase() === 'svg' && !el.parentElement?.closest('svg')) {
         const svg = el as unknown as SVGSVGElement;
         const rect = svg.getBoundingClientRect();
         const w = svg.width?.baseVal?.value || rect.width;

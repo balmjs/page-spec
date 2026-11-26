@@ -71,7 +71,7 @@ export interface QaDiagnosticSnapshot {
 const STORAGE_KEY = 'pagespec_specloop_config';
 const PENDING_AUTH_KEY = 'pagespec_pending_auth_origin';
 export const PAGESPEC_VERSION =
-  (typeof browser !== 'undefined' && browser.runtime?.getManifest?.()?.version) || '1.2.0';
+  (typeof browser !== 'undefined' && browser.runtime?.getManifest?.()?.version) || '1.3.0';
 
 export function normalizeSpecLoopBaseUrl(raw: string): { baseUrl: string; origin: string } | null {
   const trimmed = (raw || '').trim();
@@ -198,7 +198,7 @@ export async function startSpecLoopAuthHandshake(
     };
   }
 
-  const authUrl = `${parsed.baseUrl}/#/auth/extension-connect?client=pagespec&version=${encodeURIComponent(PAGESPEC_VERSION)}`;
+  const authUrl = `${parsed.baseUrl}/auth/extension-connect?client=pagespec&version=${encodeURIComponent(PAGESPEC_VERSION)}`;
 
   // Record expected origin directly in extension storage so handshake verification works reliably
   try {
@@ -414,13 +414,22 @@ export function createSpecBundleManifest(params: {
   title: string;
   sanitizedTitle: string;
   sourceUrl: string;
+  designUrl?: string;
+  sourceType?: 'prd-doc' | 'prd-prototype' | 'design-spec' | 'api-spec';
   markdownFile: string;
   diffFile?: string;
   assetsCount: number;
   endpointsCount?: number;
   artboardsCount?: number;
+  vectorCount?: number;
   platform?: string;
 }): SpecBundleManifest {
+  const resolvedDesignUrl =
+    params.designUrl || (params.type === 'design' ? params.sourceUrl : undefined);
+  const resolvedSourceType =
+    params.sourceType ||
+    (params.type === 'design' ? 'design-spec' : params.type === 'api' ? 'api-spec' : 'prd-doc');
+
   return {
     schemaVersion: '1.0',
     generator: 'PageSpec',
@@ -429,12 +438,15 @@ export function createSpecBundleManifest(params: {
     title: params.title,
     sanitizedTitle: params.sanitizedTitle,
     sourceUrl: params.sourceUrl,
+    ...(resolvedDesignUrl ? { designUrl: resolvedDesignUrl } : {}),
+    sourceType: resolvedSourceType,
     extractedAt: new Date().toISOString(),
     markdownFile: params.markdownFile,
     ...(params.diffFile ? { diffFile: params.diffFile } : {}),
     assetsCount: params.assetsCount,
     ...(params.endpointsCount !== undefined ? { endpointsCount: params.endpointsCount } : {}),
     ...(params.artboardsCount !== undefined ? { artboardsCount: params.artboardsCount } : {}),
+    ...(params.vectorCount !== undefined ? { vectorCount: params.vectorCount } : {}),
     ...(params.platform ? { platform: params.platform } : {}),
   };
 }
@@ -502,6 +514,10 @@ export async function pushSpecBundleToSpecLoop(params: {
   }
 
   const endpoint = `${baseUrl}/api/v1/import/pagespec`;
+  const resolvedDesignUrl =
+    params.manifest.designUrl ||
+    (params.manifest.type === 'design' ? params.manifest.sourceUrl : undefined);
+
   const res: any = await browser.runtime.sendMessage({
     type: 'PUSH_TO_SPECLOOP',
     endpoint,
@@ -510,6 +526,10 @@ export async function pushSpecBundleToSpecLoop(params: {
       taskId: params.taskId !== undefined ? params.taskId || undefined : params.config.defaultTaskId || undefined,
       projectId: params.projectId || params.config.defaultProjectId || undefined,
       sectionAnchor: params.sectionAnchor || undefined,
+      platform: params.manifest.platform || undefined,
+      sourceType: params.manifest.sourceType || undefined,
+      sourceUrl: params.manifest.sourceUrl || undefined,
+      designUrl: resolvedDesignUrl || undefined,
       manifest: params.manifest,
       markdown: params.markdown,
       diffMarkdown: params.diffMarkdown || undefined,

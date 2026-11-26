@@ -2,6 +2,10 @@ import { defineContentScript } from 'wxt/utils/define-content-script';
 import { extractPrdBundle } from '../core/extractors/prd-extractor';
 import { extractApiDocumentation, listAvailableApiEndpoints } from '../core/extractors/api-extractor';
 import { listDesignArtboards, extractDesignBundle } from '../core/extractors/design-extractor';
+import {
+  collectCurrentWindowShellContext,
+  findTargetIframeRectInTopWindow,
+} from '../core/extractors/prototype-prd-extractor';
 import { buildZipArchive } from '../core/bundler/zip-builder';
 import { evaluateCurrentFrameContent } from '../core/extractors/frame-scorer';
 import { uint8ArrayToBase64 } from '../utils/dom-helpers';
@@ -81,6 +85,32 @@ export default defineContentScript({
         return true;
       }
 
+      // Top-frame helper: collect outer prototype shell Page Notes, breadcrumb & iframe rect
+      if (message.type === 'GET_PROTOTYPE_SHELL_CONTEXT') {
+        try {
+          const shellCtx = collectCurrentWindowShellContext(message.frameUrl || '');
+          sendResponse({ ok: true, data: shellCtx });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+        return true;
+      }
+
+      // Top-frame helper: return bounding box of embedded iframe for accurate cross-origin region cropping
+      if (message.type === 'QUERY_IFRAME_RECT') {
+        try {
+          const info = findTargetIframeRectInTopWindow(message.frameUrl || '');
+          if (info) {
+            sendResponse({ ok: true, ...info });
+          } else {
+            sendResponse({ ok: false });
+          }
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+        return true;
+      }
+
       // List Design Artboards on current frame (Mode 1.5 - Design)
       if (message.type === 'LIST_DESIGN_ARTBOARDS') {
         try {
@@ -139,11 +169,13 @@ export default defineContentScript({
                   title: result.title,
                   sanitizedTitle: result.sanitizedTitle,
                   platform: result.platform,
+                  sourceType: result.sourceType,
                   markdown: result.markdown,
                   markdownPreview: result.markdown.slice(0, 3000),
                   assets: serializableAssets,
                   totalAssets: result.assets.length,
                   artboardsCount: result.artboardsCount,
+                  vectorCount: result.vectorCount,
                   warnings: result.warnings,
                 });
               };
@@ -154,11 +186,13 @@ export default defineContentScript({
                 title: result.title,
                 sanitizedTitle: result.sanitizedTitle,
                 platform: result.platform,
+                sourceType: result.sourceType,
                 markdown: result.markdown,
                 markdownPreview: result.markdown.slice(0, 3000),
                 assets: serializableAssets,
                 totalAssets: result.assets.length,
                 artboardsCount: result.artboardsCount,
+                vectorCount: result.vectorCount,
                 warnings: result.warnings,
               });
             }
@@ -225,6 +259,8 @@ export default defineContentScript({
                   ok: true,
                   title: result.title,
                   sanitizedTitle: result.sanitizedTitle,
+                  platform: result.platform,
+                  sourceType: result.sourceType,
                   rawMarkdown: result.markdown,
                   markdown: finalMarkdown,
                   markdownPreview: finalMarkdown.slice(0, 3000),
@@ -240,6 +276,8 @@ export default defineContentScript({
                 ok: true,
                 title: result.title,
                 sanitizedTitle: result.sanitizedTitle,
+                platform: result.platform,
+                sourceType: result.sourceType,
                 rawMarkdown: result.markdown,
                 markdown: finalMarkdown,
                 markdownPreview: finalMarkdown.slice(0, 3000),

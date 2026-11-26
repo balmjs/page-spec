@@ -1,5 +1,10 @@
 import { defineBackground } from 'wxt/utils/define-background';
-import { uint8ArrayToBase64 } from '../utils/dom-helpers';
+import {
+  uint8ArrayToBase64,
+  base64ToUint8Array,
+  computeCropBox,
+  type CaptureRegionRect,
+} from '../utils/dom-helpers';
 
 export interface ScoredFrameItem {
   frameId: number;
@@ -8,6 +13,9 @@ export interface ScoredFrameItem {
   url: string;
   isTopFrame?: boolean;
   platformBadge?: string;
+  isPrototypeShell?: boolean;
+  isPrototypeCanvas?: boolean;
+  prototypePlatform?: string;
 }
 
 export interface BestFrameResult {
@@ -16,6 +24,9 @@ export interface BestFrameResult {
   bestTitle: string;
   bestUrl: string;
   platformBadge?: string;
+  isPrototypeShell?: boolean;
+  isPrototypeCanvas?: boolean;
+  prototypePlatform?: string;
   totalFrames: number;
   frames: ScoredFrameItem[];
 }
@@ -231,6 +242,41 @@ export default defineBackground(() => {
                 };
               }
 
+              // Also monitor XMLHttpRequest failures (sanitized: method, pathname, status, duration only)
+              const XhrProto = window.XMLHttpRequest?.prototype;
+              if (XhrProto && !(XhrProto as any).__psDiagHooked) {
+                (XhrProto as any).__psDiagHooked = true;
+                const origOpen = XhrProto.open;
+                const origSend = XhrProto.send;
+                XhrProto.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: any[]) {
+                  let pathname = '[url]';
+                  try {
+                    const rawUrl = typeof url === 'string' ? url : url.href;
+                    pathname = new URL(rawUrl, window.location.href).pathname;
+                  } catch {
+                    pathname = '[url]';
+                  }
+                  (this as any).__psXhrMeta = {
+                    method: String(method || 'GET').toUpperCase(),
+                    pathname,
+                  };
+                  return origOpen.apply(this, [method, url, ...rest] as any);
+                };
+                XhrProto.send = function (this: XMLHttpRequest, body?: any) {
+                  const started = Date.now();
+                  this.addEventListener('loadend', () => {
+                    const meta = (this as any).__psXhrMeta;
+                    if (!meta) return;
+                    if (this.status >= 400) {
+                      pushEntry('http', `${meta.method} ${meta.pathname} -> HTTP ${this.status} (${Date.now() - started}ms)`);
+                    } else if (this.status === 0) {
+                      pushEntry('http', `${meta.method} ${meta.pathname} -> NETWORK_ERROR (${Date.now() - started}ms)`);
+                    }
+                  });
+                  return origSend.call(this, body);
+                };
+              }
+
               w.__PAGESPEC_DIAG_RING__ = ring;
               return true;
             },
@@ -279,7 +325,8 @@ export default defineBackground(() => {
     if (message.type === 'CAPTURE_VISIBLE_TAB') {
       (async () => {
         try {
-          const dataUrl = await browser.tabs.captureVisibleTab(undefined as any, { format: 'png' });
+          const windowId = sender?.tab?.windowId;
+          const dataUrl = await browser.tabs.captureVisibleTab(windowId as any, { format: 'png' });
           const base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
           sendResponse({ ok: true, dataUrl, base64 });
         } catch (err: any) {
@@ -289,10 +336,194 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Capture & Crop a specific viewport region (WebGL canvas fallback & prototype stage snapshot, reuses activeTab)
+    if (message.type === 'CAPTURE_REGION_CROP') {
+      (async () => {
+        try {
+          const windowId = sender?.tab?.windowId;
+          const tabId = sender?.tab?.id;
+          const frameId = sender?.frameId ?? 0;
+          let rect: CaptureRegionRect | undefined = message.rect;
+
+          // If triggered inside a cross-origin sub-frame, ask top frame for the iframe's bounding box offset
+          if (rect && message.needsTopFrameOffset && tabId && frameId !== 0) {
+            try {
+              const offsetRes: any = await browser.tabs.sendMessage(
+                tabId,
+                {
+                  type: 'QUERY_IFRAME_RECT',
+                  frameUrl: sender?.url || '',
+                },
+                { frameId: 0 }
+              );
+              if (offsetRes?.ok && offsetRes.rect) {
+                rect = {
+                  ...rect,
+                  x: rect.x + offsetRes.rect.x,
+                  y: rect.y + offsetRes.rect.y,
+                  viewportWidth: offsetRes.viewportWidth || rect.viewportWidth,
+                  viewportHeight: offsetRes.viewportHeight || rect.viewportHeight,
+                };
+              }
+            } catch {
+              // fallback to unadjusted rect if top frame is unreachable
+            }
+          }
+
+          const dataUrl = await browser.tabs.captureVisibleTab(windowId as any, { format: 'png' });
+          const rawBase64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+
+          if (!rect || rect.width <= 0 || rect.height <= 0) {
+            sendResponse({ ok: true, base64: rawBase64, dataUrl, cropped: false });
+            return;
+          }
+
+          if (typeof createImageBitmap === 'function' && typeof OffscreenCanvas !== 'undefined') {
+            let bitmap: ImageBitmap | null = null;
+            try {
+              const pngBytes = base64ToUint8Array(rawBase64);
+              const blob = new Blob([pngBytes as Uint8Array<ArrayBuffer>], { type: 'image/png' });
+              bitmap = await createImageBitmap(blob);
+              const box = computeCropBox(bitmap.width, bitmap.height, rect);
+              const canvas = new OffscreenCanvas(box.sw, box.sh);
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(bitmap, box.sx, box.sy, box.sw, box.sh, 0, 0, box.sw, box.sh);
+                const outBlob = await canvas.convertToBlob({ type: 'image/png' });
+                const outBytes = new Uint8Array(await outBlob.arrayBuffer());
+                const croppedBase64 = uint8ArrayToBase64(outBytes);
+                sendResponse({
+                  ok: true,
+                  base64: croppedBase64,
+                  width: box.sw,
+                  height: box.sh,
+                  cropped: true,
+                });
+                return;
+              }
+            } finally {
+              try {
+                bitmap?.close();
+              } catch {
+                // ignore
+              }
+            }
+          }
+
+          // Graceful fallback if OffscreenCanvas is unavailable
+          sendResponse({ ok: true, base64: rawBase64, dataUrl, cropped: false });
+        } catch (err: any) {
+          sendResponse({ ok: false, error: err?.message || String(err) });
+        }
+      })();
+      return true;
+    }
+
+    // On-demand MAIN world Axure page notes & widget annotations reader (runs ONLY during user PRD extraction)
+    if (message.type === 'READ_AXURE_METADATA') {
+      const tabId = typeof message.tabId === 'number' ? message.tabId : sender?.tab?.id;
+      const frameId = typeof message.frameId === 'number' ? message.frameId : (sender?.frameId ?? 0);
+      (async () => {
+        if (!tabId || typeof chrome === 'undefined' || !chrome.scripting?.executeScript) {
+          sendResponse({ ok: true, data: null });
+          return;
+        }
+        try {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [frameId] },
+            world: 'MAIN',
+            func: () => {
+              const w = window as any;
+              const page = w.$axure?.page;
+              const rawData = w.$axure?.page?.data || w.DATA || null;
+              if (!page && !rawData) return null;
+
+              const pageName =
+                typeof page?.pageName === 'string'
+                  ? page.pageName
+                  : typeof rawData?.pageName === 'string'
+                    ? rawData.pageName
+                    : '';
+
+              const pageNotes: string[] = [];
+              const rawNotes = page?.notes || rawData?.page?.notes || rawData?.notes;
+              if (rawNotes && typeof rawNotes === 'object') {
+                for (const [k, v] of Object.entries(rawNotes)) {
+                  const text = String(v || '').trim();
+                  if (text) {
+                    pageNotes.push(k && k !== 'Default' ? `${k}: ${text}` : text);
+                  }
+                }
+              }
+
+              const widgetNotes: Array<{ label: string; note: string }> = [];
+              const walkWidgets = (node: any, depth = 0) => {
+                if (!node || typeof node !== 'object' || depth > 8) return;
+                if (Array.isArray(node)) {
+                  for (const item of node) walkWidgets(item, depth + 1);
+                  return;
+                }
+                if (node.annotation && typeof node.annotation === 'object') {
+                  const noteParts = Object.entries(node.annotation)
+                    .map(([k, v]) => {
+                      const val = String(v || '').trim();
+                      return val ? (k && k !== 'Description' ? `${k}: ${val}` : val) : '';
+                    })
+                    .filter(Boolean);
+                  if (noteParts.length > 0) {
+                    const label = String(node.label || node.friendlyType || node.id || 'Widget').trim();
+                    widgetNotes.push({ label, note: noteParts.join('；') });
+                  }
+                }
+                if (Array.isArray(node.objects)) walkWidgets(node.objects, depth + 1);
+                if (Array.isArray(node.diagrams)) walkWidgets(node.diagrams, depth + 1);
+                if (node.diagram) walkWidgets(node.diagram, depth + 1);
+                if (node.page) walkWidgets(node.page, depth + 1);
+              };
+              walkWidgets(rawData);
+
+              return {
+                pageName,
+                pageNotes: pageNotes.slice(0, 30),
+                widgetNotes: widgetNotes.slice(0, 60),
+              };
+            },
+          });
+          sendResponse({ ok: true, data: results?.[0]?.result ?? null });
+        } catch {
+          sendResponse({ ok: true, data: null });
+        }
+      })();
+      return true;
+    }
+
+    // Relay shell context query from an inner prototype iframe to the top-level frame (frameId 0)
+    if (message.type === 'COLLECT_PROTOTYPE_SHELL_CONTEXT') {
+      const tabId = typeof message.tabId === 'number' ? message.tabId : sender?.tab?.id;
+      const frameUrl = sender?.url || message.frameUrl || '';
+      (async () => {
+        if (!tabId) {
+          sendResponse({ ok: false, data: null });
+          return;
+        }
+        try {
+          const res: any = await browser.tabs.sendMessage(
+            tabId,
+            { type: 'GET_PROTOTYPE_SHELL_CONTEXT', frameUrl },
+            { frameId: 0 }
+          );
+          sendResponse(res || { ok: false, data: null });
+        } catch {
+          sendResponse({ ok: false, data: null });
+        }
+      })();
+      return true;
+    }
+
     // Open SpecLoop Extension Auth Handshake Tab
     if (message.type === 'OPEN_SPECLOOP_AUTH_TAB') {
       const baseUrl = String(message.baseUrl || '').trim().replace(/\/+$/, '');
-      const version = String(message.version || '1.2.0');
+      const version = String(message.version || '1.3.0');
       (async () => {
         try {
           const origin = safeOrigin(baseUrl);
@@ -300,7 +531,7 @@ export default defineBackground(() => {
             throw new Error('无效的 SpecLoop 服务器地址');
           }
           await browser.storage.local.set({ [PENDING_AUTH_KEY]: origin });
-          const authUrl = `${baseUrl}/#/auth/extension-connect?client=pagespec&version=${encodeURIComponent(version)}`;
+          const authUrl = `${baseUrl}/auth/extension-connect?client=pagespec&version=${encodeURIComponent(version)}`;
           await browser.tabs.create({ url: authUrl });
           sendResponse({ ok: true });
         } catch (err: any) {
@@ -483,6 +714,9 @@ export default defineBackground(() => {
                   url: res.url || f.url || '',
                   isTopFrame: res.isTopFrame ?? f.frameId === 0,
                   platformBadge: res.platformBadge,
+                  isPrototypeShell: res.isPrototypeShell,
+                  isPrototypeCanvas: res.isPrototypeCanvas,
+                  prototypePlatform: res.prototypePlatform,
                 };
               }
             } catch {
@@ -511,6 +745,9 @@ export default defineBackground(() => {
               bestTitle: best.title,
               bestUrl: best.url,
               platformBadge: best.platformBadge,
+              isPrototypeShell: best.isPrototypeShell,
+              isPrototypeCanvas: best.isPrototypeCanvas,
+              prototypePlatform: best.prototypePlatform,
               totalFrames: frames.length,
               frames: results,
             } as BestFrameResult,

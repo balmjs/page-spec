@@ -1,7 +1,7 @@
 {
   "name": "page-spec",
-  "version": "1.2.0",
-  "description": "Cross-browser extension to extract authenticated web PRDs, UI designs & API specs into clean specs/{prd,design,api} local project folders.",
+  "version": "1.3.0",
+  "description": "Cross-browser extension to extract authenticated web PRDs, interactive prototypes, multi-platform UI designs & API specs into clean specs/{prd,design,api} local project folders.",
   "private": true,
   "license": "MIT",
   "homepage": "https://spec.balmjs.com",
@@ -19,6 +19,7 @@
     "zip:firefox": "wxt zip -b firefox",
     "postinstall": "wxt prepare",
     "typecheck": "wxt prepare && vue-tsc --noEmit",
+    "test": "node --import ./tests/ts-loader.mjs --test tests/*.test.ts",
     "release": "node scripts/release.mjs"
   },
   "dependencies": {

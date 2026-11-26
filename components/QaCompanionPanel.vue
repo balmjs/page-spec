@@ -21,6 +21,7 @@ import {
   type QaDiagnosticSnapshot,
 } from '../utils/specloop-bridge';
 import { pullTaskQaFailuresToLocal } from '../utils/specloop-puller';
+import { verifyDirectoryPermission } from '../utils/filesystem-writer';
 import { t } from '../utils/i18n';
 
 const props = defineProps<{
@@ -327,8 +328,16 @@ async function handlePullBugsToLocal() {
     return;
   }
   if (!selectedTaskId.value || isPullingBugs.value) return;
-  isPullingBugs.value = true;
+
   errorMsg.value = '';
+  // Verify readwrite permission synchronously within the click gesture BEFORE awaiting network requests
+  const hasPermission = await verifyDirectoryPermission(props.savedDirHandle);
+  if (!hasPermission) {
+    errorMsg.value = t('errPermDenied');
+    return;
+  }
+
+  isPullingBugs.value = true;
   try {
     const res = await pullTaskQaFailuresToLocal({
       dirHandle: props.savedDirHandle,

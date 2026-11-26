@@ -93,6 +93,44 @@ export function dereferenceSchema(schema: any, rootSpec: any, seenRefs = new Set
     return merged;
   }
 
+  // Handle OpenAPI 3.0/3.1 oneOf / anyOf (including nullable anyOf: [schema, { type: 'null' }])
+  const unionKey = Array.isArray(schema.oneOf) ? 'oneOf' : Array.isArray(schema.anyOf) ? 'anyOf' : null;
+  if (unionKey) {
+    const variants: any[] = schema[unionKey];
+    const derefVariants = variants.map((v) => dereferenceSchema(v, rootSpec, seenRefs, depth + 1));
+    const nonNullVariants = derefVariants.filter((v) => v && v.type !== 'null');
+    const nullable = nonNullVariants.length < derefVariants.length;
+
+    if (nonNullVariants.length === 1) {
+      return {
+        ...nonNullVariants[0],
+        ...(schema.description ? { description: schema.description } : {}),
+        ...(nullable ? { nullable: true } : {}),
+      };
+    }
+
+    if (nonNullVariants.length > 1) {
+      const mergedProps: Record<string, any> = {};
+      const typeNames: string[] = [];
+      for (const v of nonNullVariants) {
+        if (v.properties && typeof v.properties === 'object') {
+          Object.assign(mergedProps, v.properties);
+        }
+        const label = v.title || v.type || (v.properties ? 'object' : 'any');
+        if (!typeNames.includes(label)) typeNames.push(label);
+      }
+      const primary = nonNullVariants[0];
+      return {
+        ...primary,
+        ...(Object.keys(mergedProps).length > 0 ? { type: 'object', properties: mergedProps } : {}),
+        description: schema.description || primary.description || '',
+        __unionKind: unionKey,
+        __unionTypes: typeNames,
+        ...(nullable ? { nullable: true } : {}),
+      };
+    }
+  }
+
   if (schema.type === 'array' && schema.items) {
     return {
       ...schema,
@@ -152,12 +190,17 @@ export function flattenSchemaToRows(
     const isReq = requiredList.includes(key);
 
     let typeStr = prop.type || (prop.properties ? 'object' : 'string');
-    if (prop.format) {
+    if (Array.isArray(prop.__unionTypes) && prop.__unionTypes.length > 1) {
+      typeStr = `${prop.__unionKind || 'oneOf'}<${prop.__unionTypes.join(' | ')}>`;
+    } else if (prop.format) {
       typeStr += `(${prop.format})`;
     }
     if (prop.type === 'array') {
       const itemType = prop.items?.type || (prop.items?.properties ? 'object' : 'any');
       typeStr = `array<${itemType}>`;
+    }
+    if (prop.nullable) {
+      typeStr += ' | null';
     }
 
     let desc = (prop.description || '').replace(/\n/g, ' ').trim();
@@ -176,8 +219,8 @@ export function flattenSchemaToRows(
       description: desc,
     });
 
-    // Recurse into nested object properties
-    if (prop.type === 'object' && prop.properties) {
+    // Recurse into nested object properties (even when `type: 'object'` is omitted)
+    if (prop.type !== 'array' && prop.properties && Object.keys(prop.properties).length > 0) {
       rows.push(...flattenSchemaToRows(prop, rootSpec, fullPath, seenRefs, depth + 1));
     } else if (prop.type === 'array' && prop.items?.properties) {
       rows.push(...flattenSchemaToRows(prop.items, rootSpec, `${fullPath}[]`, seenRefs, depth + 1));
@@ -519,7 +562,9 @@ async function sniffRawOpenApiSpec(): Promise<any | null> {
   }
 
   if (!foundSpec || (!foundSpec.paths && !foundSpec.openapi && !foundSpec.swagger)) {
-    const specElement = document.querySelector('script[type="application/json"]#swagger-data, script#__NEXT_DATA__');
+    const specElement = document.querySelector(
+      'script[type="application/json"]#swagger-data, script#api-reference[type="application/json"], script#__NEXT_DATA__'
+    );
     if (specElement && specElement.textContent) {
       try {
         const parsed = JSON.parse(specElement.textContent);
@@ -529,6 +574,33 @@ async function sniffRawOpenApiSpec(): Promise<any | null> {
       } catch {
         // ignore json parse error
       }
+    }
+  }
+
+  // Fallback for Firefox / restricted contexts where chrome.scripting is unavailable:
+  // inspect PerformanceResourceTiming directly in the content script world
+  if (!foundSpec || (!foundSpec.paths && !foundSpec.openapi && !foundSpec.swagger)) {
+    try {
+      const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+      const specResource = resources
+        .map((r) => r.name)
+        .reverse()
+        .find(
+          (url) =>
+            /\/(?:v[23]\/api-docs|swagger\.json|openapi\.json|api-docs\.json)(?:\?.*)?$/i.test(url) &&
+            !url.includes('swagger-resources')
+        );
+      if (specResource) {
+        const resp = await fetch(specResource, { credentials: 'include' });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && (data.paths || data.openapi || data.swagger)) {
+            foundSpec = data;
+          }
+        }
+      }
+    } catch {
+      // ignore resource timing fallback errors
     }
   }
 

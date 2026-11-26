@@ -1,6 +1,6 @@
 # Privacy Policy for PageSpec
 
-**Last Updated:** November 24, 2026
+**Last Updated:** November 26, 2026
 
 ## 1. Overview
 
@@ -26,8 +26,8 @@ PageSpec requests only the permissions required for its user-initiated features:
 
 | Permission | Purpose |
 | :--- | :--- |
-| `activeTab` | Grants access to the current active tab when you invoke PageSpec, including user-initiated visible viewport capture in the optional QA Companion. |
-| `scripting` | Executes on-demand page-context inspection strictly when you scan an OpenAPI/Swagger page or actively use the optional QA Companion tab. |
+| `activeTab` | Grants access to the current active tab when you invoke PageSpec, including user-initiated visible viewport region cropping for interactive design canvases/prototypes and viewport screenshot capture in the optional QA Companion. |
+| `scripting` | Executes on-demand page-context inspection strictly when you scan an OpenAPI/Swagger page, extract an Axure prototype PRD (reading page/widget notes), or actively use the optional QA Companion tab. |
 | `storage` | Persists local preferences on your device (bound folder handle metadata, per-project specs root directory name, UI language, last active tab, and optional user-configured SpecLoop server settings). All preferences stay local (`chrome.storage.local`) and are never synced to developer servers. |
 | `downloads` | Saves extracted Markdown bundles as downloadable `.zip` or `.md` files when direct folder writing is unavailable or not selected. |
 | `webNavigation` | Enumerates iframe hierarchies on the active documentation page (such as nested Axure or wiki layouts) to locate the primary specification content frame. |

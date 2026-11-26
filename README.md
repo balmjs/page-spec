@@ -17,7 +17,7 @@
 
 ---
 
-**PageSpec** is a developer-centric browser extension engineered to extract structured context from authenticated web PRDs & prototypes (Tencent Docs, WeChat SmartPages, Feishu/Lark, Yuque, Confluence, Notion, Axure Cloud, Pixso, Modao), online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso), and Swagger/OpenAPI docs—**zero backend, zero API tokens**.
+**PageSpec** is a developer-centric browser extension engineered to extract structured context from authenticated web PRDs & prototypes (Tencent Docs, WeChat SmartPages, Feishu/Lark, Yuque, Confluence, Notion, Axure Cloud, Pixso, Modao, Mockplus RP), online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso), and Swagger/OpenAPI docs—**zero backend, zero API tokens**.
 
 Simply bind your local project root folder once—PageSpec extracts authenticated web content into structured **Markdown** bundles and co-located high-resolution assets directly inside **`specs/{prd,design,api,qa}`** (auto-created with anti-nesting protection, customizable per-project root naming such as `docs/specs`, and automatic conflict detection)—**100% locally and offline**, empowering Agentic Coding in **Cursor**, **Claude Code**, **Windsurf**, and **Codex**.
 
@@ -26,14 +26,14 @@ Simply bind your local project root folder once—PageSpec extracts authenticate
 ## ✨ Key Features
 
 ### 1. 🛡️ Multi-Platform PRD & Prototype Penetration (Docs + Interactive Prototypes)
-- **Deep Frame Penetration**: Penetrates all sub-frames via Chrome MV3 `all_frames: true` to bypass cross-origin isolation across Tencent Docs, WeChat SmartPages, Feishu/Lark, Yuque, Confluence, Notion, Axure Cloud, Pixso, and Modao.
-- **Content Density Scoring**: Automatically differentiates navigation/sidebar menus from the core specification body, filtering out menu clutter and anchor density.
-- **Session-Authenticated Prototype Assets**: Runs directly within the authenticated session context, preserving login cookies to download high-res images, recordings, and Canvas elements concurrently, rewriting them to co-located relative paths (`./assets/<spec>/prototype-001.png`).
-- **Tencent Docs AST & SmartPage Engine**: Direct AST and block normalization for Tencent Docs and WeChat SmartPages, preserving headings, blockquotes, lists, and tables without layout destruction.
+- **Deep Frame Penetration**: Penetrates all sub-frames via Chrome MV3 `all_frames: true` to bypass cross-origin isolation across Tencent Docs, WeChat SmartPages, Feishu/Lark, Yuque, Confluence, Notion, Axure Cloud (`*.axshare.com`), Pixso, Modao, and Mockplus RP.
+- **Dual-Track Prototype PRD Engine**: Combines outer-shell Page Notes, sitemap breadcrumbs, and inner Widget Interaction Annotations with a clean, toolbar-free wireframe visual snapshot (`./assets/<spec>/prototype-001.png`) so visual AI agents see both the wireframe and the interaction rules.
+- **Content Density Scoring & Session-Authenticated Assets**: Automatically differentiates navigation/sidebar menus from the core specification body, downloading high-res images, recordings, and Canvas/SVG elements concurrently inside your authenticated browser session.
+- **Tencent Docs AST & SmartPage Engine**: Direct AST and block normalization for Tencent Docs and WeChat SmartPages, preserving headings, blockquotes, lists, hyperlinks, and tables without layout destruction.
 
-### 2. 🎨 Multi-Platform UI Design & Artboard Extractor (Figma / Zeplin / Sketch / MasterGo / Lanhu / Mockplus / Pixso)
-- **Zero-Token HD & Asset Capture**: Detects design artboards across mainstream online design platforms (Figma, Zeplin, Sketch, MasterGo, Lanhu, Mockplus, Pixso) and web galleries inside your authenticated session—stripping CDN/OSS thumbnail resize parameters (`x-oss-process`, `imageMogr2`, etc.) to recover full-resolution originals with automatic fallback.
-- **Selective Artboard Picker**: Search and check only the artboards needed for your current feature task, capturing visible design annotations and color tokens into `specs/design/<title>.md` + `./assets/<title>/design-xxx.<ext>`.
+### 2. 🎨 Multi-Platform UI Design, Vector SVG & WebGL Canvas Extractor (Figma / Zeplin / Sketch / MasterGo / Lanhu / Mockplus / Pixso)
+- **Zero-Token HD & Vector Capture**: Detects design artboards and standalone inline `<svg>` vectors (`>= 48×48`, XSS-sanitized) across Figma, Zeplin, Sketch Web, MasterGo, Lanhu, Mockplus, Pixso, and web galleries inside your authenticated session—stripping unsigned CDN/OSS/Imgix thumbnail parameters (`x-oss-process`, `imageMogr2`, `w`/`h`/`fit`/`q`, etc.) to recover full-resolution originals with automatic fallback.
+- **WebGL Canvas Viewport Crop Fallback**: Automatically detects blank WebGL frames (`preserveDrawingBuffer: false` in Figma / MasterGo / Pixso) and falls back to clean active-tab canvas region cropping—excluding editor toolbars/sidebars—while capturing inspector color/typography tokens and CSS annotations into `specs/design/<title>.md`.
 
 ### 3. ⚡ Categorized `specs/` Sync, Incremental Diff & Section Trimming
 - **Smart Root Auto-Organization (`specs/{prd,design,api,qa}`)**: Select your project root folder (e.g., `my-app/`) and PageSpec automatically creates `specs/prd/`, `specs/design/`, and `specs/api/` without polluting your project root. Prevents accidental nesting, supports customizable root directory names or nested relative paths (e.g., `docs/specs`, `page-specs`, `.specs`) remembered per project, and detects existing non-PageSpec `specs/` folders with one-click switching.
@@ -119,6 +119,9 @@ pnpm dev
 
 # Start development in Firefox
 pnpm dev:firefox
+
+# Typecheck & run unit tests
+pnpm typecheck && pnpm test
 
 # Build production extensions
 pnpm build

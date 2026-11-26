@@ -18,6 +18,7 @@
     "core/**/*",
     "utils/**/*",
     "components/**/*",
+    "tests/**/*",
     "bin/**/*",
     ".wxt/wxt.d.ts"
   ]

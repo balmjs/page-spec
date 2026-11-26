@@ -242,14 +242,395 @@ export function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/png'): Pro
 }
 
 /**
- * Convert inline SVG element to an SVG text Blob.
+ * Clean trailing platform brand suffixes from document titles across major design,
+ * prototype, and documentation platforms.
+ */
+const PLATFORM_TITLE_SUFFIX_REGEX =
+  /\s*(?:[-|–—·]\s*(?:Figma|Zeplin|Sketch(?:\s+Cloud|\s+Web)?|蓝湖|Lanhu|Mockplus(?:\s+RP|\s+DT)?|摹客(?:\s*RP|\s*DT)?|MasterGo|Pixso|墨刀|Modao|MockingBot|Axure(?:\s+Cloud|\s+RP)?|腾讯文档|企业微信文档|飞书云文档|语雀|Confluence|Notion)\s*)+$/i;
+
+export function cleanPlatformTitleSuffix(rawTitle: string): string {
+  if (!rawTitle || typeof rawTitle !== 'string') return '';
+  const trimmed = rawTitle.trim();
+  const stripped = trimmed.replace(PLATFORM_TITLE_SUFFIX_REGEX, '').trim();
+  return stripped || trimmed;
+}
+
+export interface CaptureRegionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dpr?: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+}
+
+export interface PixelCropBox {
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+}
+
+/**
+ * Compute pixel-aligned crop bounds inside a captured tab bitmap, handling DPR and browser zoom.
+ */
+export function computeCropBox(
+  imageWidth: number,
+  imageHeight: number,
+  rect: CaptureRegionRect
+): PixelCropBox {
+  const safeImgW = Math.max(1, Math.round(imageWidth));
+  const safeImgH = Math.max(1, Math.round(imageHeight));
+
+  const scaleX =
+    rect.viewportWidth && rect.viewportWidth > 0
+      ? safeImgW / rect.viewportWidth
+      : rect.dpr && rect.dpr > 0
+        ? rect.dpr
+        : 1;
+  const scaleY =
+    rect.viewportHeight && rect.viewportHeight > 0 ? safeImgH / rect.viewportHeight : scaleX;
+
+  const rawX = Math.round(rect.x * scaleX);
+  const rawY = Math.round(rect.y * scaleY);
+  const rawRight = Math.round((rect.x + rect.width) * scaleX);
+  const rawBottom = Math.round((rect.y + rect.height) * scaleY);
+
+  const sx = Math.max(0, Math.min(safeImgW - 1, rawX));
+  const sy = Math.max(0, Math.min(safeImgH - 1, rawY));
+  const right = Math.max(sx + 1, Math.min(safeImgW, rawRight));
+  const bottom = Math.max(sy + 1, Math.min(safeImgH, rawBottom));
+
+  return {
+    sx,
+    sy,
+    sw: Math.max(1, right - sx),
+    sh: Math.max(1, bottom - sy),
+  };
+}
+
+/**
+ * Fallback PNG region cropper in DOM context when Service Worker OffscreenCanvas is unavailable.
+ */
+export async function cropCapturedPngInDom(
+  dataUrl: string,
+  rect: CaptureRegionRect
+): Promise<Uint8Array | null> {
+  if (typeof document === 'undefined' || !dataUrl) return null;
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Failed to load captured PNG'));
+      el.src = dataUrl;
+    });
+    const box = computeCropBox(img.naturalWidth || img.width, img.naturalHeight || img.height, rect);
+    const canvas = document.createElement('canvas');
+    canvas.width = box.sw;
+    canvas.height = box.sh;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(img, box.sx, box.sy, box.sw, box.sh, 0, 0, box.sw, box.sh);
+    const blob = await canvasToBlob(canvas, 'image/png');
+    if (!blob) return null;
+    return new Uint8Array(await blob.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compute element rect in viewport coordinates, accumulating same-origin iframe offsets when possible.
+ * Returns `needsTopFrameOffset: true` when running inside a cross-origin iframe.
+ */
+export function getElementCaptureRect(el: Element): {
+  rect: CaptureRegionRect;
+  needsTopFrameOffset: boolean;
+} {
+  const box = el.getBoundingClientRect();
+  let x = box.left;
+  let y = box.top;
+  let needsTopFrameOffset = false;
+  let viewportWidth = window.innerWidth;
+  let viewportHeight = window.innerHeight;
+
+  if (window !== window.top) {
+    try {
+      let win: Window = window;
+      while (win !== win.parent) {
+        const frameEl = win.frameElement;
+        if (!frameEl) {
+          needsTopFrameOffset = true;
+          break;
+        }
+        const fRect = frameEl.getBoundingClientRect();
+        x += fRect.left;
+        y += fRect.top;
+        win = win.parent;
+      }
+      if (!needsTopFrameOffset) {
+        viewportWidth = win.innerWidth;
+        viewportHeight = win.innerHeight;
+      }
+    } catch {
+      needsTopFrameOffset = true;
+    }
+  }
+
+  return {
+    rect: {
+      x: Math.round(x),
+      y: Math.round(y),
+      width: Math.round(box.width),
+      height: Math.round(box.height),
+      dpr: window.devicePixelRatio || 1,
+      viewportWidth,
+      viewportHeight,
+    },
+    needsTopFrameOffset,
+  };
+}
+
+/**
+ * Sample an 8x8 grid (64 pixels) across an RGBA pixel buffer to detect blank / cleared WebGL frames
+ * (either 100% transparent alpha === 0 or 0 RGB variance such as pure solid black/white).
+ */
+export function isRgbaBufferBlank(
+  data: Uint8ClampedArray | Uint8Array,
+  width: number,
+  height: number
+): boolean {
+  if (!data || width <= 0 || height <= 0 || data.length < width * height * 4) {
+    return true;
+  }
+
+  const grid = 8;
+  let nonTransparentCount = 0;
+  let firstR = -1;
+  let firstG = -1;
+  let firstB = -1;
+  let hasColorVariance = false;
+
+  for (let gy = 0; gy < grid; gy++) {
+    const py = Math.min(height - 1, Math.floor(((gy + 0.5) * height) / grid));
+    for (let gx = 0; gx < grid; gx++) {
+      const px = Math.min(width - 1, Math.floor(((gx + 0.5) * width) / grid));
+      const offset = (py * width + px) * 4;
+      const r = data[offset] ?? 0;
+      const g = data[offset + 1] ?? 0;
+      const b = data[offset + 2] ?? 0;
+      const a = data[offset + 3] ?? 0;
+
+      if (a > 0) {
+        nonTransparentCount++;
+        if (firstR === -1) {
+          firstR = r;
+          firstG = g;
+          firstB = b;
+        } else if (
+          Math.abs(r - firstR) > 2 ||
+          Math.abs(g - firstG) > 2 ||
+          Math.abs(b - firstB) > 2
+        ) {
+          hasColorVariance = true;
+        }
+      }
+    }
+  }
+
+  if (nonTransparentCount === 0) return true;
+  return !hasColorVariance;
+}
+
+/**
+ * Inspect an exported PNG/canvas Blob using a fast 64x64 offscreen draw to detect blank WebGL frames
+ * caused by `preserveDrawingBuffer: false`.
+ */
+export async function isImageBlobBlank(blob: Blob): Promise<boolean> {
+  if (!blob || blob.size === 0) return true;
+
+  const sampleSize = 64;
+
+  // Fast path: createImageBitmap + OffscreenCanvas
+  if (typeof createImageBitmap === 'function' && typeof OffscreenCanvas !== 'undefined') {
+    let bitmap: ImageBitmap | null = null;
+    try {
+      bitmap = await createImageBitmap(blob);
+      const canvas = new OffscreenCanvas(sampleSize, sampleSize);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return false;
+      ctx.clearRect(0, 0, sampleSize, sampleSize);
+      ctx.drawImage(bitmap, 0, 0, sampleSize, sampleSize);
+      const imgData = ctx.getImageData(0, 0, sampleSize, sampleSize);
+      return isRgbaBufferBlank(imgData.data, sampleSize, sampleSize);
+    } catch {
+      // fall through to DOM Image fallback
+    } finally {
+      try {
+        bitmap?.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // Fallback: HTMLImageElement + HTMLCanvasElement
+  if (typeof document === 'undefined' || typeof URL === 'undefined') {
+    return false;
+  }
+
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Image decode failed'));
+      el.src = objectUrl;
+    });
+    const canvas = document.createElement('canvas');
+    canvas.width = sampleSize;
+    canvas.height = sampleSize;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return false;
+    ctx.clearRect(0, 0, sampleSize, sampleSize);
+    ctx.drawImage(img, 0, 0, sampleSize, sampleSize);
+    const imgData = ctx.getImageData(0, 0, sampleSize, sampleSize);
+    return isRgbaBufferBlank(imgData.data, sampleSize, sampleSize);
+  } catch {
+    return false;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+/**
+ * Sanitize raw SVG markup string:
+ * - Ensures xmlns="http://www.w3.org/2000/svg" and optional fallback viewBox
+ * - Strips <script>, <foreignObject>, <iframe>, <object>, <embed>, <applet>
+ * - Strips inline on* event attributes and javascript:/vbscript:/data:text/html URIs
+ * - Strips CSS expression() and javascript: url() patterns
+ */
+export function sanitizeSvgMarkup(rawSvg: string, fallbackViewBox?: string): string {
+  if (!rawSvg || typeof rawSvg !== 'string') return '';
+
+  let cleaned = rawSvg.trim();
+
+  // Strip dangerous container elements and their inner contents
+  const dangerousBlockTags = ['script', 'foreignObject', 'iframe', 'object', 'embed', 'applet'];
+  for (const tag of dangerousBlockTags) {
+    const pairRe = new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}\\s*>`, 'gi');
+    const selfCloseRe = new RegExp(`<${tag}\\b[^>]*\\/?>`, 'gi');
+    cleaned = cleaned.replace(pairRe, '').replace(selfCloseRe, '');
+  }
+
+  // Strip animation tags that target href or event handlers
+  cleaned = cleaned.replace(
+    /<(?:set|animate)\b[^>]*attributeName\s*=\s*["']\s*(?:on[a-z]+|(?:xlink:)?href)\s*["'][^>]*\/?>/gi,
+    ''
+  );
+
+  // Strip inline on* event handler attributes (quoted or unquoted)
+  cleaned = cleaned.replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+
+  // Strip javascript: / vbscript: / data:text/html URLs in href, xlink:href, src, action, formaction
+  cleaned = cleaned.replace(
+    /\s+(?:xlink:)?(?:href|src|action|formaction)\s*=\s*(?:"\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^"]*"|'\s*(?:javascript|vbscript|data\s*:\s*text\/html)[^']*')/gi,
+    ''
+  );
+
+  // Neutralize dangerous CSS expressions / javascript: url() inside style blocks or attributes
+  cleaned = cleaned.replace(/expression\s*\([^)]*\)/gi, '');
+  cleaned = cleaned.replace(/url\s*\(\s*["']?\s*(?:javascript|vbscript):[^)]*\)/gi, 'none');
+
+  // Ensure root <svg> has xmlns
+  if (/^<svg\b/i.test(cleaned) && !/^<svg\b[^>]*\bxmlns\s*=/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^<svg\b/i, '<svg xmlns="http://www.w3.org/2000/svg"');
+  }
+
+  // Ensure root <svg> has viewBox when a fallback is available
+  if (
+    fallbackViewBox &&
+    /^<svg\b/i.test(cleaned) &&
+    !/^<svg\b[^>]*\bviewBox\s*=/i.test(cleaned)
+  ) {
+    cleaned = cleaned.replace(/^<svg\b/i, `<svg viewBox="${fallbackViewBox}"`);
+  }
+
+  return cleaned;
+}
+
+/**
+ * Safely clone, strip dangerous nodes/attributes from an inline SVG element,
+ * ensure xmlns + viewBox, and serialize to clean SVG markup.
+ */
+export function serializeSafeSvg(svg: SVGSVGElement | Element): string {
+  const clone = svg.cloneNode(true) as Element;
+
+  // Compute fallback viewBox from live element before detaching
+  let fallbackViewBox: string | undefined;
+  if (!clone.getAttribute('viewBox')) {
+    try {
+      const rect = svg.getBoundingClientRect();
+      const attrW = parseFloat(svg.getAttribute('width') || '0');
+      const attrH = parseFloat(svg.getAttribute('height') || '0');
+      const w = Math.round(rect.width || attrW);
+      const h = Math.round(rect.height || attrH);
+      if (w > 0 && h > 0) {
+        fallbackViewBox = `0 0 ${w} ${h}`;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Remove dangerous elements in DOM tree first
+  const dangerousSelectors = 'script, foreignObject, iframe, object, embed, applet';
+  try {
+    clone.querySelectorAll(dangerousSelectors).forEach((node) => node.remove());
+  } catch {
+    // ignore
+  }
+
+  // Strip unsafe attributes across root and all descendants
+  const allNodes = [clone, ...Array.from(clone.querySelectorAll('*'))];
+  for (const node of allNodes) {
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      const val = attr.value.trim();
+      if (name.startsWith('on')) {
+        node.removeAttribute(attr.name);
+        continue;
+      }
+      if (
+        (name === 'href' || name === 'xlink:href' || name === 'src' || name === 'action' || name === 'formaction') &&
+        /^(?:javascript|vbscript|data\s*:\s*text\/html)/i.test(val)
+      ) {
+        node.removeAttribute(attr.name);
+        continue;
+      }
+      if (name === 'style' && /(?:expression\s*\(|javascript:|vbscript:)/i.test(val)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  }
+
+  if (!clone.getAttribute('xmlns')) {
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  }
+  if (!clone.getAttribute('viewBox') && fallbackViewBox) {
+    clone.setAttribute('viewBox', fallbackViewBox);
+  }
+
+  const serializer = new XMLSerializer();
+  return sanitizeSvgMarkup(serializer.serializeToString(clone), fallbackViewBox);
+}
+
+/**
+ * Convert inline SVG element to a sanitized SVG text Blob.
  */
 export function svgToBlob(svg: SVGSVGElement): Blob {
-  const serializer = new XMLSerializer();
-  let source = serializer.serializeToString(svg);
-  if (!source.match(/^<svg[^>]+xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)) {
-    source = source.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
-  }
+  const source = serializeSafeSvg(svg);
   return new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
 }
 

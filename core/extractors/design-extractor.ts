@@ -1,26 +1,49 @@
 /**
- * Design Artboard & Asset Extractor for Lanhu, MasterGo, Modao, Figma, Axure, and Web Design Pages.
- * Runs 100% locally inside the authenticated browser session.
+ * Multi-Platform Zero-Token Design Artboard & Asset Extractor (v1.3)
+ * Covers Tier 1 DOM/CDN platforms (Lanhu, Mockplus, Zeplin, Sketch Web, Modao)
+ * and Tier 2 WebGL/WASM canvas platforms (Figma, MasterGo, Pixso) plus Axure & web galleries.
+ *
+ * - Strips unsigned CDN resize parameters to recover full-resolution originals.
+ * - Captures meaningful inline <svg> vector assets (>= 48x48, XSS-sanitized).
+ * - Detects blank WebGL canvas frames (preserveDrawingBuffer: false) and falls back to
+ *   activeTab region-cropped viewport capture cleanly excluding toolbars/sidebars.
  */
 
 import { generateYamlFrontmatter } from '../markdown/turndown-rules';
 import {
   sanitizeFilename,
+  cleanPlatformTitleSuffix,
   resolveImageSource,
   extractBackgroundImageUrl,
   canvasToBlob,
+  isImageBlobBlank,
+  serializeSafeSvg,
+  getElementCaptureRect,
+  cropCapturedPngInDom,
   asyncPool,
   getExtensionFromMimeOrUrl,
   base64ToUint8Array,
 } from '../../utils/dom-helpers';
 import type { BundleAsset } from '../bundler/zip-builder';
 
-export type DesignPlatform = 'lanhu' | 'mastergo' | 'modao' | 'figma' | 'axure' | 'generic-design';
+export type DesignPlatform =
+  | 'figma'
+  | 'zeplin'
+  | 'sketch'
+  | 'lanhu'
+  | 'mockplus'
+  | 'mastergo'
+  | 'pixso'
+  | 'modao'
+  | 'axure'
+  | 'generic-design';
+
+export type DesignAssetSourceType = 'img' | 'canvas' | 'bg' | 'svg';
 
 export interface DesignArtboardSummary {
   id: string;
   name: string;
-  sourceType: 'img' | 'canvas' | 'bg';
+  sourceType: DesignAssetSourceType;
   previewUrl: string;
   highResUrl: string;
   width: number;
@@ -34,71 +57,154 @@ export interface DesignArtboardListResult {
   platform: DesignPlatform;
   mode: 'multi-board' | 'single-detail';
   artboards: DesignArtboardSummary[];
+  vectorCount: number;
   pageAnnotations: string[];
   colorTokens: string[];
+  typographyTokens: string[];
 }
 
 export interface DesignExtractionResult {
   title: string;
   sanitizedTitle: string;
   platform: DesignPlatform;
+  sourceType: 'design-spec';
   markdown: string;
   assets: BundleAsset[];
   artboardsCount: number;
+  vectorCount: number;
   warnings: string[];
 }
 
+const WEBGL_CANVAS_PLATFORMS: ReadonlySet<DesignPlatform> = new Set(['figma', 'mastergo', 'pixso']);
+
 /**
- * Identify the design platform from URL and DOM heuristics.
+ * Identify the design platform from URL and optional DOM heuristics (pure & Node-testable).
  */
-export function detectDesignPlatform(url = window.location.href): DesignPlatform {
-  const lower = url.toLowerCase();
-  if (lower.includes('lanhuapp.com') || lower.includes('lanhu')) return 'lanhu';
-  if (lower.includes('mastergo.com')) return 'mastergo';
-  if (lower.includes('modao.cc') || lower.includes('mockingbot')) return 'modao';
-  if (lower.includes('figma.com')) return 'figma';
-  if (lower.includes('axure') || document.querySelector('#base, .ax_default')) return 'axure';
+export function detectDesignPlatform(
+  url = typeof window !== 'undefined' ? window.location.href : '',
+  hasAxureDom?: boolean
+): DesignPlatform {
+  const lower = (url || '').toLowerCase();
+  let hostname = '';
+  try {
+    hostname = new URL(lower).hostname;
+  } catch {
+    hostname = lower;
+  }
+
+  if (hostname === 'figma.com' || hostname.endsWith('.figma.com')) return 'figma';
+  if (hostname === 'zeplin.io' || hostname.endsWith('.zeplin.io')) return 'zeplin';
+  if (
+    hostname === 'sketch.com' ||
+    hostname.endsWith('.sketch.com') ||
+    hostname === 'sketch.cloud' ||
+    hostname.endsWith('.sketch.cloud')
+  ) {
+    return 'sketch';
+  }
+  if (hostname === 'lanhuapp.com' || hostname.endsWith('.lanhuapp.com') || /\blanhu\b/.test(hostname)) {
+    return 'lanhu';
+  }
+  if (
+    hostname === 'mockplus.cn' ||
+    hostname.endsWith('.mockplus.cn') ||
+    hostname === 'mockplus.com' ||
+    hostname.endsWith('.mockplus.com')
+  ) {
+    return 'mockplus';
+  }
+  if (hostname === 'mastergo.com' || hostname.endsWith('.mastergo.com')) return 'mastergo';
+  if (
+    hostname === 'pixso.cn' ||
+    hostname.endsWith('.pixso.cn') ||
+    hostname === 'pixso.net' ||
+    hostname.endsWith('.pixso.net')
+  ) {
+    return 'pixso';
+  }
+  if (
+    hostname === 'modao.cc' ||
+    hostname.endsWith('.modao.cc') ||
+    hostname === 'mockingbot.com' ||
+    hostname.endsWith('.mockingbot.com') ||
+    hostname === 'mockingbot.cn' ||
+    hostname.endsWith('.mockingbot.cn')
+  ) {
+    return 'modao';
+  }
+  if (
+    hostname === 'axure.cloud' ||
+    hostname.endsWith('.axure.cloud') ||
+    hostname === 'axshare.com' ||
+    hostname.endsWith('.axshare.com') ||
+    /\baxure\b/.test(lower) ||
+    (typeof hasAxureDom === 'boolean'
+      ? hasAxureDom
+      : typeof document !== 'undefined' && Boolean(document.querySelector('#base, .ax_default')))
+  ) {
+    return 'axure';
+  }
   return 'generic-design';
 }
 
+const SIGNED_QUERY_KEYS = [
+  'signature',
+  'ossaccesskeyid',
+  'x-amz-signature',
+  'x-amz-credential',
+  'x-goog-signature',
+  'q-signature',
+  'sign',
+  'sig',
+  'key-pair-id',
+  'policy',
+  'token',
+];
+
+const RESIZE_QUERY_KEY_RE =
+  /^(?:x-oss-process|imageMogr2|imageView2|imageSlim|thumbnail|resize|w|width|h|height|fit|q|quality|auto|dpr|fm|format|scale|size)$/i;
+
 /**
- * Attempt to strip thumbnail resize query parameters (Aliyun OSS, Tencent COS, Qiniu, Lanhu CDN)
- * to recover lossless full-resolution design URLs while preserving auth tokens when safe.
+ * Strip unsigned thumbnail resize parameters (Aliyun OSS, Tencent COS, Qiniu, Imgix, CloudFront,
+ * Zeplin, Sketch, Mockplus, Lanhu CDN) to recover full-resolution original design URLs.
+ * Signed URLs are left intact to avoid invalidating HMAC signatures.
  */
-export function restoreHighResDesignUrl(rawUrl: string): string {
+export function restoreHighResDesignUrl(
+  rawUrl: string,
+  baseUrl = typeof window !== 'undefined' ? window.location.href : 'https://example.com/'
+): string {
   if (!rawUrl || rawUrl.startsWith('data:') || rawUrl.startsWith('blob:')) {
     return rawUrl;
   }
 
   try {
-    const parsed = new URL(rawUrl, window.location.href);
+    const parsed = new URL(rawUrl, baseUrl);
 
-    // If URL is signed (OSS/COS/S3), modifying query params may break signature;
-    // return unsigned clean URL only if no signature param exists, or strip unsigned resize suffix.
+    const lowerKeys = new Set(Array.from(parsed.searchParams.keys()).map((k) => k.toLowerCase()));
     const hasSignature =
-      parsed.searchParams.has('Signature') ||
-      parsed.searchParams.has('OSSAccessKeyId') ||
-      parsed.searchParams.has('X-Amz-Signature') ||
-      parsed.searchParams.has('q-signature') ||
-      parsed.searchParams.has('sign');
+      SIGNED_QUERY_KEYS.some((k) => lowerKeys.has(k)) ||
+      (lowerKeys.has('s') && (lowerKeys.has('e') || lowerKeys.has('exp') || lowerKeys.has('expires')));
 
     if (!hasSignature) {
-      // Aliyun OSS resize / quality / format
-      if (parsed.searchParams.has('x-oss-process')) {
-        parsed.searchParams.delete('x-oss-process');
-      }
-      // Tencent COS / Qiniu imageView2 / imageMogr2
-      for (const key of Array.from(parsed.searchParams.keys())) {
-        if (/^(?:imageMogr2|imageView2|imageSlim|thumbnail|resize)$/i.test(key)) {
-          parsed.searchParams.delete(key);
-        }
-      }
-      // Strip raw query string starting with imageMogr2 / imageView2 (non-KV Qiniu/COS format)
+      // Strip raw non-KV Qiniu / COS imageMogr2 / imageView2 query strings
       if (/^\?(?:imageMogr2|imageView2)\//i.test(parsed.search)) {
         parsed.search = '';
+      } else {
+        for (const key of Array.from(parsed.searchParams.keys())) {
+          if (RESIZE_QUERY_KEY_RE.test(key)) {
+            parsed.searchParams.delete(key);
+          }
+        }
       }
+
       // Lanhu / OSS exclamation or @ style thumbnail suffix in pathname (e.g. .png!small or .png@300w)
       parsed.pathname = parsed.pathname.replace(/(\.(?:png|jpe?g|webp))[@!][^/]+$/i, '$1');
+
+      // Zeplin / Sketch / Mockplus preview thumbnail filename suffixes (e.g. home_thumb.png -> home.png)
+      parsed.pathname = parsed.pathname.replace(
+        /(?:[_.-](?:thumb|thumbnail|preview|small))(\.(?:png|jpe?g|webp))$/i,
+        '$1'
+      );
     }
 
     return parsed.href;
@@ -108,16 +214,19 @@ export function restoreHighResDesignUrl(rawUrl: string): string {
 }
 
 /**
- * Infer a human-readable artboard name from surrounding DOM labels.
+ * Infer a human-readable artboard or vector asset name from surrounding DOM labels.
  */
-function inferArtboardName(el: Element, index: number): string {
-  // 1. Check direct element attributes
+function inferArtboardName(el: Element, index: number, isVector = false): string {
+  // 1. Direct element attributes
   const attrCandidates = [
     el.getAttribute('alt'),
     el.getAttribute('title'),
     el.getAttribute('aria-label'),
     el.getAttribute('data-name'),
     el.getAttribute('data-title'),
+    el.getAttribute('data-artboard-name'),
+    el.getAttribute('data-layer-name'),
+    isVector ? el.querySelector('title')?.textContent : null,
   ];
   for (const c of attrCandidates) {
     const text = c?.trim();
@@ -126,9 +235,9 @@ function inferArtboardName(el: Element, index: number): string {
     }
   }
 
-  // 2. Walk up to artboard card container and find label/title element
+  // 2. Artboard card container label
   const card = el.closest(
-    '[class*="artboard"], [class*="board"], [class*="screen"], [class*="card"], [class*="item"], figure, li'
+    '[class*="artboard"], [class*="board"], [class*="screen"], [class*="frame-card"], [class*="card"], [class*="item"], figure, li'
   );
   if (card) {
     const labelEl = card.querySelector(
@@ -140,69 +249,100 @@ function inferArtboardName(el: Element, index: number): string {
     }
   }
 
-  // 3. On single-detail view, check active page title in header/sidebar
+  // 3. Active page / artboard breadcrumb in editor topbar or layer tree (Figma / MasterGo / Pixso / Zeplin / Sketch)
   const activeHeader = document.querySelector(
-    '[class*="artboard-name"], [class*="page-name"], [class*="stage-title"], [class*="tree"] [class*="active"]'
+    '[class*="artboard-name"], [class*="screen-name"], [class*="page-name"], [class*="stage-title"], [data-testid="filename"], [class*="file-title"], [class*="breadcrumb"] [class*="active"], [class*="tree"] [class*="active"], [class*="layer"][class*="selected"]'
   );
-  const headerText = activeHeader?.textContent?.trim().split('\n')[0]?.trim();
+  const headerText = cleanPlatformTitleSuffix(activeHeader?.textContent?.trim().split('\n')[0]?.trim() || '');
   if (headerText && headerText.length >= 1 && headerText.length <= 60) {
     return index === 0 ? headerText : `${headerText}-${index + 1}`;
   }
 
-  return `Artboard-${String(index + 1).padStart(2, '0')}`;
+  const prefix = isVector ? 'Vector' : 'Artboard';
+  return `${prefix}-${String(index + 1).padStart(2, '0')}`;
 }
 
 /**
- * Extract design annotations, review comments, and CSS color tokens visible on the page.
+ * Extract design annotations, CSS snippets, color tokens (#HEX / rgba), and typography tokens
+ * from inspector sidebars across Figma Dev Mode, Zeplin, Sketch, Mockplus, MasterGo, Pixso, and Lanhu.
  */
-function extractDesignAnnotationsAndTokens(): { annotations: string[]; colorTokens: string[] } {
+function extractDesignAnnotationsAndTokens(): {
+  annotations: string[];
+  colorTokens: string[];
+  typographyTokens: string[];
+} {
   const annotations = new Set<string>();
   const colorTokens = new Set<string>();
+  const typographyTokens = new Set<string>();
 
   const annotationSelectors = [
     '[class*="annotation"]',
     '[class*="comment-content"]',
     '[class*="comment-text"]',
+    '[class*="comment-body"]',
     '[class*="mark-text"]',
     '[class*="note-content"]',
     '[class*="css-code"]',
     '[class*="style-code"]',
     '[class*="code-box"]',
+    '[class*="code-snippet"]',
+    '[class*="inspect-code"]',
+    '[class*="dev-mode"] pre',
+    '[class*="inspector"] pre',
+    '[class*="inspector"] code',
+    '[class*="snippet"]',
   ];
+
+  const extractTokensFromText = (text: string) => {
+    const hexMatches = text.match(/#[0-9a-fA-F]{8}\b|#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g);
+    if (hexMatches) {
+      hexMatches.forEach((c) => colorTokens.add(c.toUpperCase()));
+    }
+    const rgbaMatches = text.match(/rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}(?:\s*,\s*(?:0|1|0?\.\d+))?\s*\)/gi);
+    if (rgbaMatches) {
+      rgbaMatches.forEach((c) => colorTokens.add(c.replace(/\s+/g, ' ')));
+    }
+    const fontMatches = text.match(/(?:font-family|font-size|line-height|font-weight)\s*:\s*[^;}\n]{1,60}/gi);
+    if (fontMatches) {
+      fontMatches.forEach((f) => typographyTokens.add(f.replace(/\s+/g, ' ').trim()));
+    }
+  };
 
   for (const sel of annotationSelectors) {
     try {
       document.querySelectorAll(sel).forEach((el) => {
         const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (text.length >= 4 && text.length <= 300) {
+        if (text.length >= 4 && text.length <= 400) {
           annotations.add(text);
         }
-        const hexMatches = text.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/g);
-        if (hexMatches) {
-          hexMatches.forEach((c) => colorTokens.add(c.toUpperCase()));
-        }
+        extractTokensFromText(text);
       });
     } catch {
       // ignore selector error
     }
   }
 
-  // Also scan dedicated color swatch badges in inspector sidebars
+  // Dedicated color swatch & typography inspector elements
   try {
-    document.querySelectorAll('[class*="color-value"], [class*="hex"], [class*="swatch"]').forEach((el) => {
-      const text = (el.textContent || '').trim();
-      const hexMatches = text.match(/#[0-9a-fA-F]{6}\b/g);
-      if (hexMatches) {
-        hexMatches.forEach((c) => colorTokens.add(c.toUpperCase()));
-      }
-    });
+    document
+      .querySelectorAll(
+        '[class*="color-value"], [class*="hex"], [class*="swatch"], [class*="color-code"], [class*="token-value"], [class*="text-style"], [class*="font-info"]'
+      )
+      .forEach((el) => {
+        const text = (el.textContent || '').trim();
+        extractTokensFromText(text);
+        if (/(?:\d+px\s*\/\s*\d+px|\b\d{2}px\b.*(?:Regular|Medium|Semibold|Bold))/i.test(text) && text.length <= 80) {
+          typographyTokens.add(text.replace(/\s+/g, ' '));
+        }
+      });
   } catch {
     // ignore
   }
 
   return {
     annotations: Array.from(annotations).slice(0, 30),
-    colorTokens: Array.from(colorTokens).slice(0, 20),
+    colorTokens: Array.from(colorTokens).slice(0, 24),
+    typographyTokens: Array.from(typographyTokens).slice(0, 16),
   };
 }
 
@@ -211,7 +351,6 @@ function extractDesignAnnotationsAndTokens(): { annotations: string[]; colorToke
  */
 function isDesignArtboardCandidate(el: Element, width: number, height: number, url?: string): boolean {
   if (width < 100 || height < 100) return false;
-  // Filter tiny square avatars or banner logos
   const classAndSrc = `${(el as HTMLElement).className || ''} ${el.getAttribute('alt') || ''} ${url || ''}`.toLowerCase();
   if (
     classAndSrc.includes('avatar') ||
@@ -227,11 +366,41 @@ function isDesignArtboardCandidate(el: Element, width: number, height: number, u
 }
 
 /**
- * Scan the current page and list selectable design artboards / visual canvases.
+ * Check whether an inline <svg> is a meaningful standalone design/illustration/icon asset
+ * (>= 48x48) rather than platform UI chrome (toolbar button, navbar icon, spinner).
+ */
+function isDesignSvgCandidate(svg: SVGSVGElement, width: number, height: number): boolean {
+  if (width < 48 || height < 48) return false;
+  if (svg.parentElement?.closest('svg')) return false;
+  if (svg.closest('nav, header, footer, [role="toolbar"], [role="menubar"], [class*="toolbar"], [class*="menubar"], [class*="header-bar"], [class*="top-bar"], [class*="nav-bar"]')) {
+    return false;
+  }
+
+  const classAttr = (svg.getAttribute('class') || '').toLowerCase();
+  const idAttr = (svg.getAttribute('id') || '').toLowerCase();
+  const combined = `${classAttr} ${idAttr}`;
+  if (
+    combined.includes('spinner') ||
+    combined.includes('loading') ||
+    combined.includes('avatar') ||
+    combined.includes('cursor') ||
+    combined.includes('toolbar-icon') ||
+    combined.includes('ui-icon')
+  ) {
+    return false;
+  }
+
+  // Must contain actual vector primitives
+  const hasShapes = Boolean(svg.querySelector('path, rect, circle, ellipse, polygon, polyline, line, text, image'));
+  return hasShapes;
+}
+
+/**
+ * Scan the current page and list selectable design artboards, WebGL canvases, and inline SVG vectors.
  */
 export function listDesignArtboards(): DesignArtboardListResult {
   const platform = detectDesignPlatform();
-  const rawTitle = document.title?.trim().replace(/\s*[-|–]\s*(?:蓝湖|Lanhu|MasterGo|墨刀|Figma).*$/i, '') || 'Design_Spec';
+  const rawTitle = cleanPlatformTitleSuffix(document.title || '') || 'Design_Spec';
   const cleanTitle = sanitizeFilename(rawTitle, 'Design_Spec');
 
   const artboards: DesignArtboardSummary[] = [];
@@ -265,7 +434,7 @@ export function listDesignArtboards(): DesignArtboardListResult {
     idx++;
   }
 
-  // 2. Scan background-image artboard cards (common in Lanhu / Modao / MasterGo thumbnails)
+  // 2. Scan background-image artboard cards (Lanhu / Mockplus / Modao / MasterGo / Zeplin thumbnails)
   const bgNodes = Array.from(
     document.querySelectorAll('[style*="background-image"], [style*="background:"]')
   );
@@ -295,14 +464,13 @@ export function listDesignArtboards(): DesignArtboardListResult {
     idx++;
   }
 
-  // 3. Scan large <canvas> elements (Figma / MasterGo / Lanhu WebGL/2D stage)
+  // 3. Scan large <canvas> elements (Figma / MasterGo / Pixso / Lanhu WebGL or 2D stage)
   const canvases = Array.from(document.querySelectorAll('canvas'));
   for (const canvas of canvases) {
     const rect = canvas.getBoundingClientRect();
     const w = Math.round(canvas.width || rect.width);
     const h = Math.round(canvas.height || rect.height);
     if (w < 240 || h < 180) continue;
-    // Skip hidden canvases
     if (rect.width < 100 || rect.height < 100) continue;
 
     artboards.push({
@@ -311,13 +479,45 @@ export function listDesignArtboards(): DesignArtboardListResult {
       sourceType: 'canvas',
       previewUrl: '',
       highResUrl: '',
-      width: w,
-      height: h,
+      width: Math.round(rect.width || w),
+      height: Math.round(rect.height || h),
     });
     idx++;
   }
 
-  const { annotations, colorTokens } = extractDesignAnnotationsAndTokens();
+  // 4. Scan meaningful standalone inline <svg> vector assets (>= 48x48, non-chrome)
+  let vectorCount = 0;
+  const svgs = Array.from(document.querySelectorAll('svg'));
+  for (const svg of svgs) {
+    const rect = svg.getBoundingClientRect();
+    const w = Math.round(rect.width || svg.width?.baseVal?.value || 0);
+    const h = Math.round(rect.height || svg.height?.baseVal?.value || 0);
+    if (!isDesignSvgCandidate(svg, w, h)) continue;
+
+    let previewUrl = '';
+    try {
+      const safeSvg = serializeSafeSvg(svg);
+      if (safeSvg.length > 0 && safeSvg.length < 250000) {
+        previewUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(safeSvg)}`;
+      }
+    } catch {
+      // ignore preview serialization errors
+    }
+
+    artboards.push({
+      id: `design-svg-${idx + 1}`,
+      name: inferArtboardName(svg, idx, true),
+      sourceType: 'svg',
+      previewUrl,
+      highResUrl: '',
+      width: w,
+      height: h,
+    });
+    vectorCount++;
+    idx++;
+  }
+
+  const { annotations, colorTokens, typographyTokens } = extractDesignAnnotationsAndTokens();
   const mode: 'multi-board' | 'single-detail' = artboards.length > 1 ? 'multi-board' : 'single-detail';
 
   return {
@@ -326,8 +526,10 @@ export function listDesignArtboards(): DesignArtboardListResult {
     platform,
     mode,
     artboards,
+    vectorCount,
     pageAnnotations: annotations,
     colorTokens,
+    typographyTokens,
   };
 }
 
@@ -385,13 +587,56 @@ async function fetchDesignImageBinary(
 }
 
 /**
- * Extract selected (or all detected) design artboards into local assets and structured Markdown.
+ * WebGL Canvas fallback: capture visible active tab via background and crop strictly to the canvas bounds.
+ * When `sharedCaptureDataUrl` is provided (multi-canvas page), crops locally in DOM to avoid
+ * Chrome's MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.
+ */
+async function captureCanvasRegionFallback(
+  canvas: HTMLCanvasElement,
+  sharedCaptureDataUrl?: string | null
+): Promise<{ bytes: Uint8Array; cropped: boolean } | null> {
+  const { rect, needsTopFrameOffset } = getElementCaptureRect(canvas);
+  if (rect.width < 40 || rect.height < 40) return null;
+
+  if (sharedCaptureDataUrl && !needsTopFrameOffset) {
+    const croppedBytes = await cropCapturedPngInDom(sharedCaptureDataUrl, rect);
+    if (croppedBytes) {
+      return { bytes: croppedBytes, cropped: true };
+    }
+  }
+
+  const res: any = await browser.runtime.sendMessage({
+    type: 'CAPTURE_REGION_CROP',
+    rect,
+    needsTopFrameOffset,
+  });
+
+  if (res?.ok) {
+    if (!res.cropped && res.dataUrl && !needsTopFrameOffset) {
+      const domCropped = await cropCapturedPngInDom(res.dataUrl, rect);
+      if (domCropped) {
+        return { bytes: domCropped, cropped: true };
+      }
+    }
+    if (res.base64) {
+      return {
+        bytes: base64ToUint8Array(res.base64),
+        cropped: Boolean(res.cropped),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract selected (or all detected) design artboards, WebGL canvases, and inline SVGs
+ * into local assets and structured Markdown.
  */
 export async function extractDesignBundle(
   onProgress?: (current: number, total: number, message: string) => void,
   selectedIds?: string[]
 ): Promise<DesignExtractionResult> {
-  onProgress?.(5, 100, '正在扫描设计画板与标注信息...');
+  onProgress?.(5, 100, '正在扫描设计画板、矢量 SVG 与标注信息...');
 
   const scan = listDesignArtboards();
   const selectedSet = selectedIds && selectedIds.length > 0 ? new Set(selectedIds) : null;
@@ -400,7 +645,7 @@ export async function extractDesignBundle(
     : scan.artboards;
 
   if (targets.length === 0) {
-    throw new Error('未在当前页面检测到可提取的设计图或画板，请确认已选中至少 1 张画板');
+    throw new Error('未在当前页面检测到可提取的设计图、画布或矢量资产，请确认已选中至少 1 项');
   }
 
   const assets: BundleAsset[] = [];
@@ -409,41 +654,109 @@ export async function extractDesignBundle(
     artboard: DesignArtboardSummary;
     localPath: string;
     filename: string;
+    formatLabel: string;
     usedUrl: string;
   }> = [];
 
-  // Map live canvas elements by index for canvas targets
+  // Snapshot live canvas & SVG node lists in matching scan order
   const liveCanvases = Array.from(document.querySelectorAll('canvas')).filter((c) => {
     const rect = c.getBoundingClientRect();
     return (c.width || rect.width) >= 240 && (c.height || rect.height) >= 180 && rect.width >= 100 && rect.height >= 100;
   });
 
-  onProgress?.(15, 100, `准备并发抓取 ${targets.length} 张高清设计画板...`);
+  const liveSvgs = Array.from(document.querySelectorAll('svg')).filter((svg) => {
+    const rect = svg.getBoundingClientRect();
+    const w = Math.round(rect.width || svg.width?.baseVal?.value || 0);
+    const h = Math.round(rect.height || svg.height?.baseVal?.value || 0);
+    return isDesignSvgCandidate(svg, w, h);
+  });
+
+  onProgress?.(15, 100, `准备并发抓取 ${targets.length} 项高清设计资产...`);
+
+  // If multiple canvas targets are selected on the top frame, share a single visible tab capture
+  // across blank-frame fallbacks to avoid hitting Chrome's captureVisibleTab per-second quota.
+  const selectedCanvasCount = targets.filter((t) => t.sourceType === 'canvas').length;
+  let sharedViewportPromise: Promise<string | null> | null = null;
+  const getSharedViewportDataUrl = (): Promise<string | null> => {
+    if (selectedCanvasCount <= 1 || window !== window.top) return Promise.resolve(null);
+    if (!sharedViewportPromise) {
+      sharedViewportPromise = browser.runtime
+        .sendMessage({ type: 'CAPTURE_VISIBLE_TAB' })
+        .then((res: any) => (res?.ok && res.dataUrl ? String(res.dataUrl) : null))
+        .catch(() => null);
+    }
+    return sharedViewportPromise;
+  };
 
   let completed = 0;
+  let exportedVectorCount = 0;
+
   await asyncPool(5, targets, async (artboard, index) => {
     const seq = String(index + 1).padStart(3, '0');
     const slug = sanitizeFilename(artboard.name, `board-${seq}`).slice(0, 40);
 
     try {
-      if (artboard.sourceType === 'canvas') {
-        // Match canvas element by order among canvas items
+      if (artboard.sourceType === 'svg') {
+        const svgIdx = scan.artboards
+          .filter((a) => a.sourceType === 'svg')
+          .findIndex((a) => a.id === artboard.id);
+        const targetSvg = liveSvgs[svgIdx];
+        if (!targetSvg) throw new Error('未找到对应的内联 SVG 节点');
+        const safeSvgMarkup = serializeSafeSvg(targetSvg);
+        if (!safeSvgMarkup) throw new Error('SVG 序列化结果为空');
+        const bytes = new TextEncoder().encode(safeSvgMarkup);
+        const filename = `assets/${scan.sanitizedTitle}/design-${seq}-${slug}.svg`;
+        assets.push({ filename, data: bytes });
+        exportedVectorCount++;
+        exportedItems[index] = {
+          artboard,
+          localPath: `./${filename}`,
+          filename,
+          formatLabel: 'SVG',
+          usedUrl: '[inline-svg]',
+        };
+      } else if (artboard.sourceType === 'canvas') {
         const canvasIdx = scan.artboards
           .filter((a) => a.sourceType === 'canvas')
           .findIndex((a) => a.id === artboard.id);
         const targetCanvas = liveCanvases[canvasIdx] || liveCanvases[0];
         if (!targetCanvas) throw new Error('未找到对应的 Live Canvas 节点');
+
+        // 1. Try direct canvasToBlob + 64-pixel blank-frame check (catches WebGL preserveDrawingBuffer: false)
         const blob = await canvasToBlob(targetCanvas);
-        if (!blob) throw new Error('Canvas 跨域受限或内容为空，无法导出位图');
-        const buffer = await blob.arrayBuffer();
-        const filename = `assets/${scan.sanitizedTitle}/design-${seq}-${slug}.png`;
-        assets.push({ filename, data: new Uint8Array(buffer) });
-        exportedItems[index] = {
-          artboard,
-          localPath: `./${filename}`,
-          filename,
-          usedUrl: '[live-canvas]',
-        };
+        const isBlank = !blob || (await isImageBlobBlank(blob));
+
+        if (!isBlank && blob) {
+          const buffer = await blob.arrayBuffer();
+          const filename = `assets/${scan.sanitizedTitle}/design-${seq}-${slug}.png`;
+          assets.push({ filename, data: new Uint8Array(buffer) });
+          exportedItems[index] = {
+            artboard,
+            localPath: `./${filename}`,
+            filename,
+            formatLabel: 'PNG (Canvas)',
+            usedUrl: '[live-canvas]',
+          };
+        } else {
+          // 2. WebGL / tainted canvas fallback -> activeTab viewport region crop
+          const sharedDataUrl = await getSharedViewportDataUrl();
+          const cropRes = await captureCanvasRegionFallback(targetCanvas, sharedDataUrl);
+          if (!cropRes) {
+            const hint = WEBGL_CANVAS_PLATFORMS.has(scan.platform)
+              ? 'WebGL 画布为空且视口裁切兜底不可用（请确保目标标签页处于当前可见状态）'
+              : 'Canvas 跨域受限或内容为空，且视口裁切兜底失败';
+            throw new Error(hint);
+          }
+          const filename = `assets/${scan.sanitizedTitle}/design-${seq}-${slug}.png`;
+          assets.push({ filename, data: cropRes.bytes });
+          exportedItems[index] = {
+            artboard,
+            localPath: `./${filename}`,
+            filename,
+            formatLabel: cropRes.cropped ? 'PNG (Viewport Crop)' : 'PNG (Viewport)',
+            usedUrl: '[webgl-viewport-crop]',
+          };
+        }
       } else {
         const { buffer, mime, usedUrl } = await fetchDesignImageBinary(
           artboard.highResUrl,
@@ -452,25 +765,28 @@ export async function extractDesignBundle(
         const ext = getExtensionFromMimeOrUrl(mime, usedUrl);
         const filename = `assets/${scan.sanitizedTitle}/design-${seq}-${slug}.${ext}`;
         assets.push({ filename, data: new Uint8Array(buffer) });
+        if (ext === 'svg') exportedVectorCount++;
         exportedItems[index] = {
           artboard,
           localPath: `./${filename}`,
           filename,
+          formatLabel: ext.toUpperCase(),
           usedUrl,
         };
       }
     } catch (err: any) {
-      warnings.push(`画板 [${artboard.name}] 下载失败: ${err?.message || err}`);
+      warnings.push(`画板 [${artboard.name}] 提取失败: ${err?.message || err}`);
       exportedItems[index] = {
         artboard,
         localPath: artboard.previewUrl || '',
         filename: '',
+        formatLabel: artboard.sourceType.toUpperCase(),
         usedUrl: artboard.previewUrl || '',
       };
     } finally {
       completed++;
       const pct = 15 + Math.floor((completed / Math.max(1, targets.length)) * 75);
-      onProgress?.(pct, 100, `设计图抓取进度: ${completed}/${targets.length}...`);
+      onProgress?.(pct, 100, `设计资产抓取进度: ${completed}/${targets.length}...`);
     }
   });
 
@@ -480,10 +796,12 @@ export async function extractDesignBundle(
   const frontmatter = generateYamlFrontmatter({
     title: scan.title,
     source_url: sourceUrl,
+    design_url: sourceUrl,
     extracted_at: new Date().toISOString(),
     type: 'design-spec',
     platform: scan.platform,
     artboard_count: exportedItems.length,
+    vector_count: exportedVectorCount,
     asset_count: assets.length,
     ...(warnings.length > 0 ? { warnings } : {}),
   });
@@ -493,29 +811,39 @@ export async function extractDesignBundle(
     '',
     `- **Source Platform**: \`${scan.platform}\``,
     `- **Source URL**: ${sourceUrl}`,
-    `- **Exported Artboards**: ${exportedItems.length} (${assets.length} localized images)`,
+    `- **Exported Assets**: ${exportedItems.length} (${assets.length} localized files${exportedVectorCount > 0 ? `, including ${exportedVectorCount} SVG vectors` : ''})`,
     '',
   ];
 
-  // Summary Table
-  mdLines.push('## Artboard Index', '');
-  mdLines.push('| # | Artboard Name | Dimensions | Local Asset Path |');
-  mdLines.push('| :-: | :--- | :--- | :--- |');
+  // Unified Asset Manifest Table (Bitmaps + SVG Vectors)
+  mdLines.push('## Artboard & Asset Index', '');
+  mdLines.push('| # | Asset Name | Type | Dimensions | Local Asset Path |');
+  mdLines.push('| :-: | :--- | :---: | :--- | :--- |');
   exportedItems.forEach((item, idx) => {
     if (!item) return;
     const dim = item.artboard.width && item.artboard.height ? `${item.artboard.width} × ${item.artboard.height}` : 'N/A';
-    mdLines.push(`| ${idx + 1} | ${item.artboard.name} | \`${dim}\` | \`${item.localPath || 'N/A'}\` |`);
+    mdLines.push(
+      `| ${idx + 1} | ${item.artboard.name} | \`${item.formatLabel}\` | \`${dim}\` | \`${item.localPath || 'N/A'}\` |`
+    );
   });
   mdLines.push('');
 
-  // Design Tokens & Page Annotations if found
+  // Color & Typography Tokens
   if (scan.colorTokens.length > 0) {
     mdLines.push('## Detected Color Tokens', '');
     mdLines.push(scan.colorTokens.map((c) => `\`${c}\``).join(' · '), '');
   }
 
+  if (scan.typographyTokens.length > 0) {
+    mdLines.push('## Detected Typography & Style Tokens', '');
+    for (const token of scan.typographyTokens) {
+      mdLines.push(`- \`${token}\``);
+    }
+    mdLines.push('');
+  }
+
   if (scan.pageAnnotations.length > 0) {
-    mdLines.push('## Design Annotations & Notes', '');
+    mdLines.push('## Design Annotations & Inspector CSS', '');
     for (const note of scan.pageAnnotations) {
       mdLines.push(`- ${note}`);
     }
@@ -528,26 +856,29 @@ export async function extractDesignBundle(
     if (!item) return;
     const dim = item.artboard.width && item.artboard.height ? `${item.artboard.width} × ${item.artboard.height}` : 'Auto';
     mdLines.push(`### ${idx + 1}. ${item.artboard.name}`, '');
+    mdLines.push(`- **Type**: \`${item.formatLabel}\``);
     mdLines.push(`- **Dimensions**: \`${dim}\``);
     if (item.localPath) {
       mdLines.push(`- **Asset File**: \`${item.localPath}\``, '');
       mdLines.push(`![${item.artboard.name}](${item.localPath})`, '');
     } else {
-      mdLines.push(`- **Status**: Failed to download image`, '');
+      mdLines.push(`- **Status**: Failed to export asset`, '');
     }
   });
 
   const fullMarkdown = `${frontmatter}\n${mdLines.join('\n')}\n`;
 
-  onProgress?.(100, 100, '设计稿资产与规范提取完成');
+  onProgress?.(100, 100, '全平台设计稿资产与规范提取完成');
 
   return {
     title: scan.title,
     sanitizedTitle: scan.sanitizedTitle,
     platform: scan.platform,
+    sourceType: 'design-spec',
     markdown: fullMarkdown,
     assets,
     artboardsCount: exportedItems.length,
+    vectorCount: exportedVectorCount,
     warnings,
   };
 }
